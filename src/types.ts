@@ -2,9 +2,12 @@
  * The vault's shared vocabulary.
  *
  * `SecretKind` is the one type here that carries a policy decision rather than
- * a shape: `config` is passed through to a brokered child, `secret` is dummied,
- * and `sealed` is never returned by any route. `policy.ts` is where each of
- * those is enforced.
+ * a shape: `sealed` values are never shown by `get`/`show`, only exported to
+ * `vault run`. `policy.ts` is where that is enforced. `config` and `secret`
+ * behave the same; the label is for readers.
+ *
+ * `keyModeSchema` keeps `broker` for existing keys, which `policy.ts` limits
+ * to listing names.
  *
  * Each shape is declared once, as a valibot schema, and its TypeScript type is
  * inferred from it. The server validates requests and the client validates
@@ -20,7 +23,7 @@ import * as v from "valibot";
 
 export const keyTypeSchema = v.picklist(["user", "system"]);
 export const permissionSchema = v.picklist(["read", "readwrite", "full"]);
-export const keyModeSchema = v.picklist(["inject", "broker"]);
+const keyModeSchema = v.picklist(["inject", "broker"]);
 export const secretKindSchema = v.picklist(["config", "secret", "sealed"]);
 export const auditActionSchema = v.picklist([
   "audit_list",
@@ -68,15 +71,6 @@ export const secretRecordSchema = v.object({
   kind: secretKindSchema,
 });
 
-export const routeRecordSchema = v.object({
-  host: v.string(),
-  secretName: v.string(),
-  inject: v.string(),
-  stripHeaders: v.array(v.string()),
-  dummyEnvName: v.string(),
-  dummyValue: v.string(),
-});
-
 export const auditRecordSchema = v.object({
   id: v.string(),
   keyPrefix: v.string(),
@@ -92,16 +86,6 @@ export const masterKeyWrapMetaSchema = v.object({
   createdAt: v.string(),
 });
 
-/** `PUT .../routes` body. The server rejects unknown fields; see `app.ts`. */
-export const routeInputSchema = v.object({
-  host: v.exactOptional(v.pipe(v.string(), v.minLength(1))),
-  secret: v.pipe(v.string(), v.minLength(1)),
-  preset: v.exactOptional(v.string()),
-  header: v.exactOptional(v.string()),
-  dummyEnvName: v.exactOptional(v.string()),
-  dummyValue: v.exactOptional(v.string()),
-});
-
 export type KeyType = v.InferOutput<typeof keyTypeSchema>;
 export type Permission = v.InferOutput<typeof permissionSchema>;
 export type KeyMode = v.InferOutput<typeof keyModeSchema>;
@@ -112,7 +96,6 @@ export type ApiKeyMeta = v.InferOutput<typeof apiKeyMetaSchema>;
 export type ApiKeyRecord = ApiKeyMeta & { id: string };
 export type SecretMeta = v.InferOutput<typeof secretMetaSchema>;
 export type SecretRecord = v.InferOutput<typeof secretRecordSchema>;
-export type RouteRecord = v.InferOutput<typeof routeRecordSchema>;
 export type AuditRecord = v.InferOutput<typeof auditRecordSchema>;
 export type MasterKeyWrapMeta = v.InferOutput<typeof masterKeyWrapMetaSchema>;
 

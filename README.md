@@ -1,18 +1,16 @@
 # BWF vault
 
-`poc/vault` is Build With Friends' credential plane: an isolated Cloudflare
-Worker + D1 that has been the authoring authority for every secret in this
-project since the 2026-09-01 cutover from Infisical. It lives under `poc/`
-pending extraction, but it is production infrastructure, not an experiment.
-The repo-root `vault.json` still names the project `bwf-shadow` — import-era
-storage identity that renaming would strand, not a statement of authority.
+This is Build With Friends' credential plane: an isolated Cloudflare Worker +
+D1 that has been the authoring authority for every secret since the 2026-09-01
+cutover from Infisical. It is production infrastructure. The production
+secrets live in the vault project `bwf-shadow`, an import-era name that
+renaming would strand, not a statement of authority.
 
 **The full documentation is at <https://vault.buildwithfriends.dev>** — concepts,
 the complete CLI and HTTP references, the database schema, and the operational
-runbooks. It is built from [`apps/vault-docs`](../../apps/vault-docs). This file
-stays the operator's entry point with the checkout open; the site is what you
-read without one. Neither is a copy of the other, and a change to this package's
-routes, commands, schema, or procedures updates both.
+runbooks. It is built from `apps/vault-docs` in the Build With Friends monorepo
+and has not caught up with this repository yet (it still describes removed
+commands and Wrangler deploys); where they disagree, this file is current.
 
 The only production values outside the encrypted D1 database are the two
 envelope-encryption roots and one-time bootstrap token. They live in Cloudflare
@@ -27,7 +25,7 @@ Build a platform-specific standalone executable and install it from the
 repository root:
 
 ```sh
-bun run install:vault-cli
+bun run install:cli
 vault --help
 ```
 
@@ -37,7 +35,7 @@ already on the standard BWF developer PATH. Override the destination for an
 isolated or system-specific installation:
 
 ```sh
-BWF_VAULT_INSTALL_DIR=/chosen/bin bun run install:vault-cli
+BWF_VAULT_INSTALL_DIR=/chosen/bin bun run install:cli
 ```
 
 The installer records the binary digest beside the command. Upgrades and
@@ -49,18 +47,17 @@ executable. It never edits a shell profile or copies credentials. If
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Remove a managed installation with `bun run uninstall:vault-cli`. Rebuild on
+Remove a managed installation with `bun run uninstall:cli`. Rebuild on
 the target operating system and architecture; the generated executable is not
 portable between platforms.
 
 ## Operator CLI
 
 Once installed, run from this repository or any directory below one that has a
-`vault.json`:
+`vault.json` (it supplies the default `project` and `env`):
 
 ```sh
 vault --help
-vault status
 vault projects list
 vault environments list --project bwf
 vault secrets list --project bwf --env dev
@@ -75,103 +72,140 @@ commands require `--yes`. A newly created or rotated API key is shown once.
 ```sh
 vault secrets set NAME --kind secret
 vault secrets collect NEW_NAME --kind secret
-vault secrets set GENERATED_NAME --kind sealed --random
 vault secrets delete NAME --yes
-vault keys create --type system --scope bwf/dev --mode inject
 vault keys rotate vault_sys_PREFIX
 vault keys revoke vault_sys_PREFIX --yes
 ```
 
-Agents should first check secret names, then run `vault secrets collect NAME
---project PROJECT --env ENV` themselves when a required user-supplied value is
-missing. Tell the user the form is ready and wait for the receipt; do not give
-them a command to run or ask for the value in chat. Continue after `stored`,
-respect cancellation or expiry, and inspect an `unknown` outcome before any new
-request. Existing interactive `vault secrets set` remains available for people
-using the CLI directly.
+## Sharing
 
-`vault mcp --project PROJECT --env ENV` exposes these operator workflows as
-native agent tools: secret collection, Cloudflare OAuth connection, approved
-one-repository GitHub reads, and durable task status/resumption. Clients can use
-URL elicitation or the MCP Tasks extension; the CLI remains available. Provider
-applications must be registered and their setup records present in Vault. See the
-[agent tools and setup reference](https://vault.buildwithfriends.dev/reference/mcp/).
-Run `bun run --cwd poc/vault acceptance:agent` for synthetic browser approval and
-brokered-read evidence. No real provider registration or deployment is performed.
-
-For an AI-assisted setup, `vault secrets collect NEW_NAME` opens a local browser
-form. The person enters the value there; the command returns only a JSON receipt.
-It uses the operator login and an existing project/environment, creates only a
-missing name, and never replaces a value. Entry expires after ten minutes.
-Cancellation before submission writes nothing. A lost save reply is `unknown`;
-inspect Vault before starting another request. Saving does not verify the provider
-credential or deploy it. The form and its TanStack Form assets are embedded in
-the CLI, with no CDN or telemetry. This protects ordinary agent context, not
-against a malicious process with access to the same operating-system account.
-Deploy the create-only API before using the new CLI against a remote Vault.
-
-Run `bun run --cwd poc/vault acceptance:collection` for synthetic browser and
-encrypted-storage acceptance. Images and the receipt are under
-`poc/vault/.wrangler/collection-acceptance`.
-
-`vault run` exports only names declared in the target Wrangler
-`secrets.required` list and fails closed when any is missing. When that config
-declares environments, the list belongs to one of them: `--wrangler-env NAME`
-or `vault.json`'s `wranglerEnvironments` selects it, and an unselected
-environment is an error rather than a fall back to the top-level list.
-`vault proxy`
-gives brokered tools dummy environment values and injects the real value only
-into an allowlisted HTTPS request. Neither command writes secret values to the
-repository.
+Share an environment with a person, machine, or agent by giving it a scoped
+system key. It can read (and with `readwrite`, write) only the listed
+project/environments, and never manage keys, projects, or audit:
 
 ```sh
-vault run -- bun scripts/dev-stack.ts --no-electron
-vault proxy -- agent-command
+vault keys create --type system --scope bwf/dev --permission read --label "ci"
 ```
 
-The repo-level `dev` and `dev:stack` scripts run under `vault run` by default,
-injecting the `dev-worker` environment before the stack starts. `vault status`
-verifies the selected runtime environment against `secrets.required` and the
-GitHub destination names against `vault.json`'s `github.env`; `vault push`
-delivers the runtime names to the Worker and the destination names to GitHub
-Actions when the matching provider tokens are present. Push fails closed
-whenever `vault.json` names anything other than the vault as `authority`.
+The holder sets `VAULT_API_URL` and `VAULT_API_KEY` (or runs `vault login`) and
+uses the same commands. Keys expire (default 90 days) and can be rotated or
+revoked at any time.
 
-## Provider verification
+## AI agents
 
-Run the redacted, read-only provider probes after authoring or rotating a
-credential:
+Agents use secrets by running commands under `vault run`, which injects every
+secret in the project/environment as an environment variable and removes
+`VAULT_API_KEY` from the child. Nothing is written to the repository:
 
 ```sh
-bun run vault:verify
-bun run vault:canary:oauth
-bun run vault:recovery:rehearse
+vault run -- bun run dev
 ```
 
-This checks the GitHub App, both analytics platform tokens, both
-Cloudflare tokens, both R2 credential pairs, and the Sentry API credential.
-OAuth uses the separate Vault-backed consumer canary above. The OAuth canary
-boots the exact registered loopback origin, verifies identity and GitHub App
-redirects, PKCE, state, scopes, and callback URLs, then confirms GitHub
-accepts both client registrations without completing consent. Sentry has no
-end-to-end ingestion canary today: the packaged-renderer-fault proof and its
-`diagnostics:sentry:proof` trigger were removed in a 2026-09-12 refactor, and
-the follow-up cleanup (2026-09-19) retired the now-broken `canary:sentry`
-script rather than rebuild it; `vault:verify`'s read-only probe is the only
-remaining check on that credential. The recovery rehearsal captures a
-restricted production export, proves it in disposable Cloudflare
-infrastructure, and removes that infrastructure. Realtime media remains the
-existing explicit desktop acceptance command.
+When a required user-supplied value is missing, agents first check names, then
+run `vault secrets collect NAME --project PROJECT --env ENV` themselves. Tell
+the user the form is ready and wait for the receipt; do not give them a command
+to run or ask for the value in chat. Continue after `stored`, respect
+cancellation or expiry, and inspect an `unknown` outcome before any new request.
+
+`vault secrets collect NEW_NAME` opens a local browser form. The person enters
+the value there; the command returns only a JSON receipt. It uses the operator
+login and an existing project/environment, creates only a missing name, and
+never replaces a value. Entry expires after ten minutes. Cancellation before
+submission writes nothing. A lost save reply is `unknown`; inspect Vault before
+starting another request. The form assets are embedded in the CLI, with no CDN
+or telemetry. This protects ordinary agent context, not against a malicious
+process with access to the same operating-system account.
+
+`vault mcp --project PROJECT --env ENV` exposes this as native agent tools:
+
+- `describe_context`: secret names and kinds, never values.
+- `collect_secret`: the user types the missing value into a prompt right in the
+  chat (MCP form elicitation; the browser form is the fallback). The model gets
+  only the receipt. The prompt box is not masked: MCP forms have no password
+  field.
+- `use_secret`: the agent writes `{{NAME}}` where a key belongs in a request
+  (URL, headers, body); the vault fills it in, refuses any substitution that
+  changes the host, sends it without following redirects, and puts the
+  placeholders back in the response. The user approves each key/host pair in
+  the chat; approvals last 15 minutes and are kept in memory only.
+- `share_access`: after the user approves, mints a read or readwrite key scoped
+  to this project/env for 5 minutes to 7 days, for another agent or person.
+- `open_panel`: an MCP Apps panel (Claude Desktop, VS Code, Cursor and other
+  hosts that render apps) listing secrets, with a masked box to add one and the
+  active approvals to revoke.
+- `get_task`/`cancel_task`: durable receipts across reconnects (MCP Tasks).
+
+### Claude Code plugin
+
+`plugin/` packages the MCP server, a `vault` skill, and hooks: at session start
+the agent learns which secret names exist, and after a failed command it is
+told which env vars are missing and whether to `collect_secret` them or rerun
+under `vault run`. Install it with the CLI on PATH and logged in:
+
+```sh
+claude plugin marketplace add /path/to/this/repo
+claude plugin install vault@vault
+```
+
+Run `bun run acceptance:collection` for synthetic browser and encrypted-storage
+acceptance. Images and the receipt are under `.wrangler/collection-acceptance`.
+
+`sealed` hides a value from `vault secrets get`, but it is still exported to
+`vault run` and to any key scoped to the environment, so it is not access
+control. `vault run` never injects loader or exec variables such as `PATH`,
+`NODE_OPTIONS`, or `LD_*`/`DYLD_*`, even when a secret has that name.
+
+## Cloudflare CLI
+
+Config, build, dev, deploy, types and D1 migrations go through Cloudflare's
+`cf` CLI (pinned `1.0.0-beta.10`) and `cloudflare.config.ts`. `--mode
+production` selects the real `bwf-vault` Worker; no mode is the local
+`bwf-vault-local` one. `cf` builds through Wrangler, so `wrangler` stays a
+dependency; the recovery rehearsal also still calls it for D1 export and
+import, which `cf` does not have yet. The two keep separate logins: `cf` for
+everything, plus Wrangler for the recovery rehearsal's export and import (or
+set `CLOUDFLARE_API_TOKEN`, which both accept):
+
+```sh
+bunx cf auth login
+bunx wrangler login
+```
+
+`.cloudflare/` (build output and generated types) is ignored; `bun run check`
+regenerates the types first.
+
+### Configuration
+
+Account and resource ids are deployment-specific and never committed (this
+repository is public). Copy `.env.example` to `.env` (gitignored) and fill in
+your own; the real environment wins over the file:
+
+| Variable | Required | Default |
+|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | for production | |
+| `VAULT_D1_ID` | for production | |
+| `VAULT_SECRETS_STORE_ID` | for production | |
+| `VAULT_WORKER_NAME` | no | `bwf-vault` (local: `bwf-vault-local`) |
+| `VAULT_D1_NAME` | no | `bwf-vault` |
+| `VAULT_SECRET_PREFIX` | no | `BWF_VAULT` |
+
+The Secrets Store names are `<prefix>_MASTER_KEY_PRIMARY`,
+`<prefix>_MASTER_KEY_SECONDARY` and `<prefix>_BOOTSTRAP_TOKEN`. `--mode
+production` refuses to run without the required ids; local mode needs none.
+`ACTIVE_MASTER_KEY` stays in `cloudflare.config.ts` on purpose: the live root
+slot must not depend on whose `.env` deployed. A test fails if anything shaped
+like a Cloudflare id lands in a committed file.
 
 ## Local development
-
-From `poc/vault`:
 
 ```sh
 bun run cli init
 bun run migrations:local
 bun run dev
 ```
+
+`migrations:local` prints its result and then may not exit (a `cf` beta bug);
+press Ctrl-C once it has printed the applied migrations.
 
 `init` creates a private `.dev.vars` containing only local root credentials;
 the repository ignores this file. In a second terminal, provide the bootstrap
@@ -188,19 +222,27 @@ The key is not printed.
 
 ## Production deployment
 
-Production resources are deliberately isolated:
+Production resources are deliberately isolated (names are the defaults; see
+Configuration):
 
 - Worker: `bwf-vault`
 - D1: `bwf-vault`
 - Secrets Store roots: `BWF_VAULT_MASTER_KEY_PRIMARY`,
   `BWF_VAULT_MASTER_KEY_SECONDARY`, `BWF_VAULT_BOOTSTRAP_TOKEN`
 
-Apply migrations before deploying code that requires them:
+Apply migrations before deploying code that requires them, and check the
+dry run's bindings first:
 
 ```sh
 bun run migrations:production
+bun run deploy:dry-run
 bun run deploy
 ```
+
+`cf d1 migrations` records into the same `d1_migrations` table Wrangler used,
+so migrations applied before the switch to `cf` count as applied. The first
+`cf` deploy also drops the `cf:service`/`cf:environment` dashboard tags that
+Wrangler's environments added; nothing at runtime changes.
 
 Deployment is not a BWF credential cutover. Bootstrap the production URL once,
 then verify root health, project CRUD, encrypted secret CRUD with a synthetic
@@ -212,16 +254,16 @@ value, API-key rotation, audit pagination, and the recovery checks in
 The checked-in `ACTIVE_MASTER_KEY` selects one of two Secrets Store bindings.
 Rotation never decrypts and rewrites every row:
 
-1. Authenticate Wrangler as the human operator authorized to update the
+1. Run `bunx cf auth login` as the human operator authorized to update the
    production Secrets Store. Vault-held runtime credentials are never used for
    this root-of-trust ceremony.
-2. Run `bun run vault:master-keys:prepare-rotation`. The helper generates a new
+2. Run `bun run master-keys:prepare-rotation`. The helper generates a new
    random 32-byte root, writes it to the inactive binding through the logged-in
-   Wrangler client, computes its expected fingerprint, and retries preparation
+   `cf` client (on stdin, never argv), computes its expected fingerprint, and retries preparation
    until that exact fingerprint is wrapped. A merely new fingerprint is not
    sufficient because Secrets Store updates can reach existing Worker isolates
    asynchronously.
-3. Change `ACTIVE_MASTER_KEY` to that slot and deploy.
+3. Change `ACTIVE_MASTER_KEY` in `cloudflare.config.ts` to that slot and deploy.
 4. Confirm `vault master-keys status` reports the expected active fingerprint
    and read a synthetic secret.
 5. Keep the prior active wrap and root through an observation window. Retire
@@ -239,62 +281,9 @@ root has not been prepared.
 bun run check
 bun run test
 bun run acceptance
-bun run types:check
 ```
 
 `acceptance` starts real local workerd + D1 state, bootstraps it, writes and
 decrypts a synthetic secret, verifies audit evidence, and removes the temporary
-state. Root `check:poc` and `test:poc` include this package's static and unit
-gates; acceptance remains an explicit runtime proof.
-
-## Shared issuers with human approval
-
-Run `vault issuance setup` to configure GitHub sign-in, then
-`vault issuance connect cloudflare` for guided team/account selection, a prefilled
-Cloudflare account-token page, one hidden token paste, and a final registration
-review. Clack provides arrow-key menus, domain checkboxes, and masked credential
-prompts. A first connection asks for a team name directly; confirmations default
-to No. It discovers provider IDs and resolves member GitHub usernames. This flow
-uses account API tokens, not Cloudflare OAuth. The new operator-only
-`GET /v1/issuance/setup` route must be deployed before the installed CLI can use it.
-See [Connect Cloudflare](https://vault.buildwithfriends.dev/start/connect-cloudflare/).
-
-Start with `vault issuance --help`. Each subcommand has offline help, including
-`vault issuance mcp --help` for the client configuration and tool flow, and
-`vault issuance admin --help` for administrative actions. `vault help issuance
-COMMAND` is also supported. See the public [provisioning guide](https://vault.buildwithfriends.dev/start/provision-services/)
-and [MCP reference](https://vault.buildwithfriends.dev/reference/mcp/).
-
-`vault issuance login --api-url https://YOUR_VAULT_HOST` connects a person through
-GitHub and selects an independent Vault tenant. `vault issuance mcp` works from
-any directory and exposes issuer discovery, immutable requests, browser approval,
-approved provider API operations, native token policies, status, revocation, and
-brokered use. Provider credentials stay inside the Worker or are delivered directly
-to an approved provider destination. `vault issuance admin` accepts configuration over stdin using the operator
-login. `vault issuance inspect REQUEST_ID` returns operator audit evidence without
-credential values. See the [setup and approval contract](../../apps/vault-docs/src/content/docs/concepts/approved-issuance.md).
-
-Apply `0002_issuance.sql` before deploying this code. Configure a GitHub OAuth app,
-its callback, tenant members by GitHub ID, and account-owned Cloudflare issuer
-credentials before live use. No feature flag or new environment credential is
-required: identity configuration and issuer credentials are encrypted D1 records,
-and missing required configuration fails loudly. Cleanup runs every five minutes.
-
-Cloudflare account/zone API operations, multipart Worker uploads, AI requests, and
-native token creation are implemented. A separate BWF AI issuer and other
-providers need provider-specific adapters. Gateway Run is account-wide; no per-gateway
-scope is claimed. Login uses a separate member session; it does not replace the operator login.
-`vault issuance logout` revokes that session before removing the local file.
-Parent policies are immutable; changing one requires revoking and
-registering a new issuer. The unused header-returning broker API has been removed.
-
-Reproduce local acceptance (synthetic providers, real HTTPS and Chromium):
-
-```sh
-bun run --cwd poc/vault acceptance:issuance
-```
-
-Screenshots and a machine-readable receipt appear under
-`poc/vault/.wrangler/issuance-acceptance`. Run `bun run --cwd poc/vault test` and
-`bun run --cwd poc/vault check` for the rest of the Vault suite and Worker bundle.
-This acceptance does not create live provider tokens or deploy anything.
+state. `bun run recovery:rehearse` proves the production restore path; see
+[RECOVERY.md](RECOVERY.md).

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import config from "../cloudflare.config.ts";
 import { VaultClient } from "../src/client.ts";
 import { generateMasterKey } from "../src/crypto.ts";
 import { randomSecretValue } from "../src/keys.ts";
@@ -34,21 +35,16 @@ writeFileSync(
 
 let worker: WorkerProcess | null = null;
 try {
-  const migrated =
-    await Bun.$`bunx wrangler d1 migrations apply DB --local --persist-to ${state}`
-      .cwd(packageRoot)
-      .quiet()
-      .nothrow();
-  if (migrated.exitCode !== 0) {
-    throw new Error(
-      `wrangler d1 migrations apply failed:\n${migrated.stdout.toString()}${migrated.stderr.toString()}`,
-    );
-  }
+  await applyLocalMigrations(state);
   worker = Bun.spawn(
     [
       "bunx",
       "wrangler",
       "dev",
+      // The same wrangler code path `cf dev` delegates to, called directly
+      // because `cf dev` forwards only --mode/--port/--host/--local and so
+      // cannot isolate --persist-to or --env-file.
+      "--experimental-new-config",
       "--local",
       "--port",
       String(port),
@@ -112,4 +108,50 @@ async function waitForWorker(url: string, child: WorkerProcess): Promise<void> {
     await Bun.sleep(200);
   }
   throw new Error("wrangler dev did not become ready within 30 seconds");
+}
+
+async function applyLocalMigrations(persistTo: string): Promise<void> {
+  const { worker: local } = await config({ mode: undefined, isPreview: false });
+  const databaseId = local.env.DB.id;
+  if (databaseId == null) throw new Error("cloudflare.config.ts DB binding has no id");
+  const child = Bun.spawn(
+    ["bunx", "cf", "d1", "migrations", "apply", databaseId, "--local", "--persist-to", persistTo],
+    { cwd: packageRoot, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  );
+  // ponytail: cf 1.0.0-beta.10 prints the JSON result for --local and then
+  // often never exits (a file watcher stays open), and its cleanup hook
+  // swallows the first SIGTERM. The parsed result is the completion signal;
+  // wait on `child.exited` instead once cf exits on its own.
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+  let text = "";
+  const decoder = new TextDecoder();
+  try {
+    for await (const chunk of child.stdout) {
+      text += decoder.decode(chunk, { stream: true });
+      let rows: { name: string; status: string }[];
+      try {
+        rows = JSON.parse(text);
+      } catch {
+        continue;
+      }
+      if (rows.some((row) => row.status !== "\u2705")) {
+        throw new Error(`cf d1 migrations apply failed:\n${text}`);
+      }
+      return;
+    }
+    throw new Error(
+      `cf d1 migrations apply exited without a result:\n${text}${await new Response(child.stderr).text()}`,
+    );
+  } finally {
+    clearTimeout(deadline);
+    // SIGTERM first (cf may swallow one), then SIGKILL so nothing lingers.
+    for (
+      let attempt = 0;
+      attempt < 5 && child.exitCode == null && child.signalCode == null;
+      attempt++
+    ) {
+      child.kill(attempt < 2 ? "SIGTERM" : "SIGKILL");
+      await Promise.race([child.exited, Bun.sleep(1_000)]);
+    }
+  }
 }

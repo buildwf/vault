@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Vault</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+      body {
+        font: var(--font-text-sm-size, 14px) / 1.5 var(--font-sans, system-ui, sans-serif);
+        color: var(--color-text-primary, CanvasText);
+        padding: 12px;
+      }
+      h2 {
+        font-size: inherit;
+        margin: 12px 0 4px;
+      }
+      ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      li {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 3px 0;
+        border-bottom: 1px solid var(--color-border-secondary, #8883);
+      }
+      code {
+        font-family: var(--font-mono, ui-monospace, monospace);
+      }
+      .muted {
+        color: var(--color-text-secondary, GrayText);
+      }
+      .row {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      input {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        padding: 4px 8px;
+        border-radius: var(--border-radius-sm, 6px);
+        border: 1px solid var(--color-border-primary, #8886);
+        background: var(--color-background-primary, Canvas);
+        color: inherit;
+      }
+      button {
+        font: inherit;
+        padding: 4px 10px;
+        border-radius: var(--border-radius-sm, 6px);
+        border: 1px solid var(--color-border-primary, #8886);
+        background: var(--color-background-secondary, ButtonFace);
+        color: inherit;
+        cursor: pointer;
+      }
+    </style>
+    <script type="module" src="./panel.ts"></script>
+  </head>
+  <body>
+    <h2>Secrets <span id="scope" class="muted"></span></h2>
+    <ul id="secrets" aria-label="Secrets"></ul>
+    <div class="row">
+      <input id="name" aria-label="New secret name" placeholder="NEW_SECRET_NAME" autocomplete="off" spellcheck="false" />
+      <input id="value" type="password" aria-label="Secret value" placeholder="value" autocomplete="off" />
+      <button id="add" type="button">Add</button>
+    </div>
+    <p class="muted">Values go straight to the vault. The AI never sees them.</p>
+    <h2>Approved for use_secret</h2>
+    <ul id="grants" aria-label="Active approvals"></ul>
+    <p id="status" role="status" aria-live="polite"></p>
+  </body>
+</html>

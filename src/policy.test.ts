@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { canDecryptValues, valueVisibleOnGet } from "./policy.ts";
+import {
+  assertActiveKey,
+  assertCanReadValues,
+  assertCanWrite,
+  valueVisibleOnGet,
+} from "./policy.ts";
 import type { ApiKeyRecord } from "./types.ts";
 
 const user: ApiKeyRecord = {
@@ -49,15 +54,16 @@ const inject: ApiKeyRecord = {
 };
 
 describe("policy", () => {
-  test("broker keys cannot decrypt", () => {
-    expect(canDecryptValues(broker)).toBe(false);
-    expect(canDecryptValues(inject)).toBe(true);
-    expect(canDecryptValues(user)).toBe(true);
+  test("legacy broker keys authenticate but are names-only", () => {
+    expect(() => assertActiveKey(broker)).not.toThrow();
+    expect(() => assertCanReadValues(broker)).toThrow("names only");
+    expect(() => assertCanWrite({ ...broker, permission: "readwrite" })).toThrow();
+    expect(() => assertCanReadValues(inject)).not.toThrow();
+    expect(() => assertCanReadValues(user)).not.toThrow();
   });
 
   test("sealed values never appear on get", () => {
-    expect(valueVisibleOnGet(user, "sealed")).toBe(false);
-    expect(valueVisibleOnGet(user, "secret")).toBe(true);
-    expect(valueVisibleOnGet(broker, "secret")).toBe(false);
+    expect(valueVisibleOnGet("sealed")).toBe(false);
+    expect(valueVisibleOnGet("secret")).toBe(true);
   });
 });

@@ -10,12 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  assertProviderPushAllowed,
-  initializeLocalVaultAt,
-  parseArgv,
-  runCli,
-} from "./cli.ts";
+import { initializeLocalVaultAt, injectableEnv, parseArgv, runCli } from "./cli.ts";
 
 describe("cli argv", () => {
   test("splits flags from the command after --", () => {
@@ -43,26 +38,33 @@ describe("cli argv", () => {
     expect(parsed.flags.rest).toEqual(["REALTIME_APP_SECRET"]);
   });
 
-  test("keeps --env and --wrangler-env as separate namespaces", () => {
-    const parsed = parseArgv([
-      "run",
-      "--env",
-      "prod",
-      "--wrangler-env",
-      "production",
-      "--",
-      "bun",
-      "x",
+  test("rejects unknown options instead of ignoring them", () => {
+    expect(() => parseArgv(["keys", "create", "--mode", "broker"])).toThrow(
+      "unknown option --mode",
+    );
+    expect(parseArgv(["secrets", "collect", "X", "--help"]).flags.rest).toContain("--help");
+  });
+
+  test("run never injects loader or exec variables", () => {
+    const { values, skipped } = injectableEnv([
+      { name: "API_TOKEN", value: "a" },
+      { name: "NODE_OPTIONS", value: "--import=x" },
+      { name: "path", value: "/tmp" },
+      { name: "DYLD_INSERT_LIBRARIES", value: "x" },
+      { name: "VAULT_API_URL", value: "x" },
+      { name: "BAD-NAME", value: "x" },
+      { name: "SHELLOPTS", value: "xtrace" },
+      { name: "PS4", value: "$(touch /tmp/x)" },
+      { name: "HTTPS_PROXY", value: "http://attacker" },
+      { name: "JAVA_TOOL_OPTIONS", value: "-javaagent:x" },
     ]);
-    expect(parsed.flags.env).toBe("prod");
-    expect(parsed.flags.wranglerEnv).toBe("production");
-    expect(parsed.flags.rest).toEqual(["bun", "x"]);
+    expect(values).toEqual({ API_TOKEN: "a" });
+    expect(skipped).toHaveLength(9);
   });
 
   test("reports a run failure as a message, not an unhandled rejection", async () => {
-    // `run` and `proxy` return their promise out of runCli's `try`, which the
-    // `catch` does not see without an await. The refusal to guess a Wrangler
-    // environment reaches the operator through exactly this path.
+    // `run` returns its promise out of runCli's `try`, which the `catch` does
+    // not see without an await.
     const previousUrl = process.env["VAULT_API_URL"];
     const previousKey = process.env["VAULT_API_KEY"];
     process.env["VAULT_API_URL"] = "http://127.0.0.1:1";
@@ -78,18 +80,6 @@ describe("cli argv", () => {
       else process.env["VAULT_API_KEY"] = previousKey;
     }
     expect(errors.join("\n")).toContain("usage: vault run -- CMD");
-  });
-
-  test("blocks provider writes while another system is authoritative", () => {
-    expect(() => {
-      assertProviderPushAllowed("external-system");
-    }).toThrow("provider push is disabled while vault.json names another authority");
-    expect(() => {
-      assertProviderPushAllowed("vault");
-    }).not.toThrow();
-    expect(() => {
-      assertProviderPushAllowed(undefined);
-    }).not.toThrow();
   });
 
   test("initializes credentials with an exclusive private create", () => {

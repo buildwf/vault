@@ -9,19 +9,23 @@
  * flags, then environment, then this file. A missing URL or key is an error
  * here rather than a request that fails later with a less useful message.
  *
+ * `readVaultJson` finds the nearest `vault.json` walking up from a directory;
+ * it only supplies the default `project` and `env`.
+ *
  * @see {@link https://vault.buildwithfriends.dev/start/install/}
  */
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as v from "valibot";
+
+import { stripJsonComments } from "./jsonc.ts";
 
 const vaultConfigSchema = v.looseObject({
   apiUrl: v.optional(v.string()),
   apiKey: v.optional(v.string()),
   project: v.optional(v.string()),
   env: v.optional(v.string()),
-  githubRepo: v.optional(v.string()),
 });
 export type VaultConfig = v.InferOutput<typeof vaultConfigSchema>;
 
@@ -60,7 +64,6 @@ type ResolveClientOptionsResult = {
   apiKey: string;
   project?: string;
   env?: string;
-  githubRepo?: string;
 };
 
 export function resolveClientOptions(flags: VaultConfig): ResolveClientOptionsResult {
@@ -76,6 +79,25 @@ export function resolveClientOptions(flags: VaultConfig): ResolveClientOptionsRe
     apiKey,
     project: flags.project ?? process.env.VAULT_PROJECT ?? stored.project,
     env: flags.env ?? process.env.VAULT_ENV ?? stored.env,
-    githubRepo: stored.githubRepo,
   };
+}
+
+const vaultJsonSchema = v.object({
+  project: v.optional(v.string()),
+  env: v.optional(v.string()),
+});
+
+export function readVaultJson(cwd: string): v.InferOutput<typeof vaultJsonSchema> {
+  for (let directory = resolve(cwd); ; directory = dirname(directory)) {
+    const path = join(directory, "vault.json");
+    if (existsSync(path)) {
+      const parsed = v.safeParse(
+        vaultJsonSchema,
+        JSON.parse(stripJsonComments(readFileSync(path, "utf8"))),
+      );
+      if (!parsed.success) throw new Error(`${path} must hold string project/env`);
+      return parsed.output;
+    }
+    if (dirname(directory) === directory) return {};
+  }
 }

@@ -10,7 +10,6 @@ import * as wire from "./types.ts";
 
 export const secretMetaSchema = v.looseObject(wire.secretMetaSchema.entries);
 export const secretRecordSchema = v.looseObject(wire.secretRecordSchema.entries);
-export const routeRecordSchema = v.looseObject(wire.routeRecordSchema.entries);
 export const apiKeyMetaSchema = v.looseObject({
   ...wire.apiKeyMetaSchema.entries,
   scopes: v.nullable(v.array(v.looseObject(wire.scopeSchema.entries))),

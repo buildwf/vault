@@ -1,64 +1,50 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { VaultClient } from "../src/client.ts";
+import { VaultClient } from "../src/client.ts";
+import { resolveClientOptions } from "../src/config.ts";
 import {
   generateMasterKey,
   masterKeyFingerprint,
   parseMasterKey,
 } from "../src/crypto.ts";
-import { stripJsonComments } from "../src/jsonc.ts";
 import { secretsStoreSecretId } from "../src/operational-proofs.ts";
-import * as v from "valibot";
-import { operatorClient } from "./operator.ts";
+import { cf, production } from "./cloudflare.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 Bun.$.cwd(packageRoot);
-
-const slotSchema = v.picklist(["primary", "secondary"]);
-type Slot = v.InferOutput<typeof slotSchema>;
-const configurationSchema = v.looseObject({
-  env: v.looseObject({
-    production: v.looseObject({
-      vars: v.looseObject({ ACTIVE_MASTER_KEY: slotSchema }),
-      secrets_store_secrets: v.array(
-        v.looseObject({
-          binding: v.string(),
-          secret_name: v.string(),
-          store_id: v.string(),
-        }),
-      ),
-    }),
-  }),
-});
 
 async function main(argv: readonly string[]): Promise<void> {
   if (argv.length !== 2 || argv[0] !== "prepare" || argv[1] !== "--yes") {
     throw new Error("usage: rotate-master-key.ts prepare --yes");
   }
-  const configuration = parseConfiguration();
-  const activeSlot = configuration.env.production.vars.ACTIVE_MASTER_KEY;
-  const inactiveSlot: Slot = activeSlot === "primary" ? "secondary" : "primary";
-  const binding = configuration.env.production.secrets_store_secrets.find(
-    (candidate) => candidate.binding === `MASTER_KEY_${inactiveSlot.toUpperCase()}`,
-  );
-  if (binding === undefined) throw new Error("inactive Secrets Store binding is missing");
-  const client = operatorClient();
+  const { accountId, worker } = await production();
+  const activeSlot = worker.env.ACTIVE_MASTER_KEY.value;
+  const inactiveSlot = activeSlot === "primary" ? "secondary" : "primary";
+  const binding =
+    inactiveSlot === "primary" ? worker.env.MASTER_KEY_PRIMARY : worker.env.MASTER_KEY_SECONDARY;
+  const { apiUrl, apiKey } = resolveClientOptions({});
+  const client = new VaultClient(apiUrl, apiKey);
   const before = await client.listMasterKeys();
-  const list =
-    await Bun.$`bunx wrangler secrets-store secret list ${binding.store_id} --remote --env production`
-      .quiet()
-      .nothrow();
-  if (list.exitCode !== 0) throw new Error("wrangler failed");
   const secretId = secretsStoreSecretId(
-    list.stdout.toString() + list.stderr.toString(),
-    binding.secret_name,
+    await cf(
+      accountId,
+      Bun.$`bunx cf secrets-store secrets list --store-id ${binding.storeId} --search ${binding.secretName} --per-page 100`,
+    ),
+    binding.secretName,
   );
   const root = generateMasterKey();
   const expectedFingerprint = await masterKeyFingerprint(parseMasterKey(root));
-  await updateSecretWithWrangler(binding.store_id, secretId, root);
+  // Root rotation is always an explicit human ceremony. The value goes in on
+  // stdin, so no argv, shell history, or process listing ever holds it.
+  // Never add --dry-run here: cf prints the value in dry-run output.
+  const comment = "Root of trust for isolated bwf-vault replacement candidate";
+  await cf(
+    accountId,
+    Bun.$`bunx cf secrets-store secrets edit ${secretId} --store-id ${binding.storeId} --value @/dev/stdin --scopes workers --comment ${comment} < ${Buffer.from(root)}`,
+  );
   const prepared = await prepareExpectedRoot(client, expectedFingerprint);
   const after = await client.listMasterKeys();
   if (!after.wraps.some((wrap) => wrap.fingerprint === prepared.fingerprint)) {
@@ -101,44 +87,6 @@ async function prepareExpectedRoot(
     await Bun.sleep(1_000);
   }
   throw new Error("Secrets Store did not propagate the expected root within one minute");
-}
-
-function parseConfiguration(): v.InferOutput<typeof configurationSchema> {
-  const value = JSON.parse(
-    stripJsonComments(readFileSync(join(packageRoot, "wrangler.jsonc"), "utf8")),
-  );
-  const parsed = v.safeParse(configurationSchema, value);
-  if (!parsed.success) {
-    const invalidSlot = parsed.issues.some((issue) =>
-      issue.path?.some((segment) => segment.key === "ACTIVE_MASTER_KEY"),
-    );
-    if (invalidSlot) {
-      throw new Error("production ACTIVE_MASTER_KEY is invalid");
-    }
-    throw new Error("vault Wrangler configuration is invalid");
-  }
-  return parsed.output;
-}
-
-async function updateSecretWithWrangler(
-  storeId: string,
-  secretId: string,
-  value: string,
-): Promise<void> {
-  // Root rotation is always an explicit human ceremony. `--value` is safe here
-  // because Bun's built-in shell runs the logged-in Wrangler client directly and
-  // escapes every interpolated argument: no system shell or history entry sees
-  // the value, and both output streams stay captured.
-  const comment = "Root of trust for isolated bwf-vault replacement candidate";
-  const update =
-    await Bun.$`bunx wrangler secrets-store secret update ${storeId} --secret-id ${secretId} --value ${value} --scopes workers --comment ${comment} --remote`
-      .quiet()
-      .nothrow();
-  if (update.exitCode !== 0) {
-    throw new Error(
-      `Secrets Store update failed: ${update.stderr.toString() || update.stdout.toString()}`,
-    );
-  }
 }
 
 if (import.meta.main) {

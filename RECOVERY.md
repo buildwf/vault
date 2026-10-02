@@ -6,12 +6,16 @@ explicit incident decision, a target bookmark/timestamp, and a current export.
 
 ## Routine proof
 
-From `poc/vault`, record the current Time Travel window and create an encrypted
-data export in an approved restricted location:
+From the repository root, record the current Time Travel bookmark and create
+an encrypted data export in an approved restricted location. `cf` has no D1
+export yet, so the export still uses Wrangler, by database name; both
+`bunx cf auth login` and `bunx wrangler login` (or `CLOUDFLARE_API_TOKEN`) are
+needed here and for `bun run recovery:rehearse`:
 
 ```sh
-bunx wrangler d1 time-travel info DB --env production
-bunx wrangler d1 export DB --env production --remote --output /restricted/bwf-vault.sql
+set -a; . ./.env; set +a   # CLOUDFLARE_ACCOUNT_ID and VAULT_D1_ID
+bunx cf d1 time-travel get-bookmark "$VAULT_D1_ID"
+bunx wrangler d1 export "${VAULT_D1_NAME:-bwf-vault}" --remote --output /restricted/bwf-vault.sql
 ```
 
 The SQL export contains ciphertext and keyed lookup hashes, not root keys. It
@@ -19,7 +23,7 @@ is still sensitive operational data and must not be committed, attached to a
 ticket, or placed in a shared temporary directory. A usable recovery requires
 both the D1 state and at least one matching active Secrets Store root wrap.
 
-Run the complete rehearsal with `bun run vault:recovery:rehearse` from the
+Run the complete rehearsal with `bun run recovery:rehearse` from the
 repository root. It creates the restricted export above, imports it into a
 uniquely named disposable remote D1 database, deploys a disposable Worker bound
 to the same Secrets Store roots, and proves the recovered operator key, a known
@@ -36,12 +40,12 @@ does not mutate or restore the production database.
 
 1. Stop writes or otherwise identify a precise consistency boundary.
 2. Capture a fresh remote export before changing anything.
-3. Run `wrangler d1 time-travel info` for the desired timestamp/bookmark and
+3. Run `bunx cf d1 time-travel get-bookmark "$VAULT_D1_ID" --timestamp <ISO time>` and
    record the returned bookmark.
 4. Confirm the selected Secrets Store root has a wrap in the target database.
 5. Obtain explicit approval for the exact database and bookmark.
-6. Restore with the exact bookmark using the command Wrangler reports for the
-   current version.
+6. Restore with the exact bookmark: `bunx cf d1 time-travel restore "$VAULT_D1_ID"
+   --bookmark <bookmark>` (check `--help` for the current flags first).
 7. Verify root health, synthetic canary read, API-key authentication, and audit
    continuity before reopening writes.
 8. Rotate any credential whose confidentiality may have been affected.
@@ -59,22 +63,3 @@ perspective; use the existing bound bootstrap token only after confirming that
 this is the intended recovery point. The CLI will immediately replace the
 15-minute bootstrap key with a durable operator key and revoke the temporary
 key.
-
-## Shared issuers after restore
-
-Restoring D1 does not restore Cloudflare to the same point in time. Provider
-services and tokens created after the bookmark may still exist, while a restored
-request can describe an operation as awaiting execution even though it already ran.
-Restored sessions and memberships can also predate revocation.
-
-Keep member access and provider execution stopped while reconciling. Compare the
-current export, restored request/audit records, and provider inventory. Revoke
-restored sessions and affected issuers with `vault issuance admin`; reconcile
-provider tokens and rotate affected parent credentials before registering replacement
-issuers and allowing fresh logins. Do not execute restored pending requests until
-their provider outcome has been checked.
-
-The ordinary recovery rehearsal proves operator authentication, a canary secret,
-and audit continuity. It does not prove that issuer sessions, token lifecycles, or
-external service effects have been reconciled. Verify those separately before
-reopening member access.

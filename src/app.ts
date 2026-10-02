@@ -24,7 +24,6 @@ import { Hono, type HonoRequest } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
-import { z } from "zod";
 
 import { timingSafeStringEqual } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
@@ -32,31 +31,26 @@ import type { VaultKeyring } from "./keyring.ts";
 import { bearerFrom, randomApiKey, randomSecretValue } from "./keys.ts";
 import {
   PolicyError,
-  assertCanDecrypt,
+  assertCanReadValues,
   assertCanWrite,
   assertActiveKey,
   assertScope,
   isOperator,
   valueVisibleOnGet,
 } from "./policy.ts";
-import { issuanceRoutes } from "./issuance/routes.ts";
-import { IssuanceStore } from "./issuance/store.ts";
-import { IssuanceService } from "./issuance/service.ts";
-import { adminSchema, id as issuanceId } from "./issuance/contracts.ts";
-import { handleMcp } from "./mcp.ts";
-import { collectedSecretSchema, collectionTargetSchema } from "./collection-contract.ts";
-import { genericRoute, routePreset } from "./presets.ts";
 import {
-  keyModeSchema,
+  SECRET_NAME,
+  collectedSecretSchema,
+  collectionTargetSchema,
+} from "./collection-contract.ts";
+import {
   keyTypeSchema,
   permissionSchema,
-  routeInputSchema,
   scopeSchema,
   secretKindSchema,
   type ApiKeyMeta,
   type ApiKeyRecord,
   type AuditAction,
-  type KeyMode,
   type Permission,
   type SecretKind,
 } from "./types.ts";
@@ -79,16 +73,21 @@ const createKeySchema = v.strictObject({
   type: keyTypeSchema,
   label: v.optional(v.string()),
   permission: v.optional(permissionSchema),
-  mode: v.optional(keyModeSchema),
+  // Older CLIs send `mode: "inject"`; no new names-only (broker) keys.
+  mode: v.optional(v.literal("inject")),
   scopes: v.optional(v.array(scopeSchema)),
   expiresInDays: expiresInDaysSchema,
+  // Short-lived keys for agent handoff; takes precedence over days.
+  expiresInMinutes: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(10080)),
+  ),
 });
 const rotateKeySchema = v.strictObject({ expiresInDays: expiresInDaysSchema });
 const patchSecretsSchema = v.strictObject({
   set: v.optional(
     v.array(
       v.object({
-        name: v.pipe(v.string(), v.minLength(1)),
+        name: v.pipe(v.string(), v.regex(SECRET_NAME)),
         value: v.optional(v.string()),
         kind: v.optional(secretKindSchema),
         random: v.optional(v.boolean()),
@@ -97,7 +96,6 @@ const patchSecretsSchema = v.strictObject({
   ),
   delete: v.optional(v.array(v.string())),
 });
-const putRouteSchema = v.strictObject(routeInputSchema.entries);
 const auditCursorSchema = v.object({
   createdAt: v.string(),
   id: v.string(),
@@ -127,8 +125,6 @@ type AppOptions = {
   bootstrapToken: string;
   /** The root-key slot that is not live; `POST /v1/master-keys/prepare` wraps for it. */
   inactiveMasterKey: string;
-  issuanceFetch?: typeof fetch;
-  now?: () => number;
 };
 
 /** Refuse non-operator keys with a 403 carrying the route's own message. */
@@ -149,10 +145,6 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   app.onError((error, c) => {
     if (error instanceof PolicyError) {
       return c.json({ error: error.message }, error.status);
-    }
-    // Issuance request schemas are zod; see `issuance/contracts.ts`.
-    if (error instanceof z.ZodError) {
-      return c.json({ error: "request body is invalid" }, 400);
     }
     console.error(
       JSON.stringify({
@@ -189,53 +181,6 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     await attachKey(c);
     await next();
   });
-
-  app.use("/mcp", async (c, next) => {
-    await attachStore(c, vaultCrypto);
-    await attachKey(c);
-    await next();
-  });
-
-  app.route("/issuance", issuanceRoutes(vaultCrypto, options.issuanceFetch, options.now));
-  app.get(
-    "/v1/issuance/requests/:id",
-    operatorOnly("only operators inspect issuer requests"),
-    async (c) => {
-      const store = new IssuanceStore(c.env.DB, vaultCrypto);
-      const request = await store.request(issuanceId.parse(c.req.param("id")));
-      const eventRows = await c.env.DB.prepare(
-        "SELECT actor, action, created_at FROM issuance_events WHERE request_id = ? ORDER BY created_at, rowid",
-      )
-        .bind(request.id)
-        .all<{ actor: string; action: string; created_at: number }>();
-      const events = eventRows.results;
-      return c.json({
-        ...(await new IssuanceService(store).view(request)),
-        subject: request.subject,
-        sessionId: request.auth_hash,
-        providerTokenId: request.token_id,
-        events,
-      });
-    },
-  );
-  app.get(
-    "/v1/issuance/setup",
-    operatorOnly("only operators inspect issuer setup"),
-    async (c) => c.json(await new IssuanceStore(c.env.DB, vaultCrypto).setup()),
-  );
-  app.post(
-    "/v1/issuance/admin",
-    operatorOnly("only operators manage issuer configuration"),
-    async (c) => {
-      await new IssuanceStore(c.env.DB, vaultCrypto).admin(
-        adminSchema.parse(await c.req.json()),
-        c.get("key").keyPrefix,
-      );
-      return c.json({ ok: true });
-    },
-  );
-
-  app.post("/mcp", (c) => handleMcp(c));
 
   app.post("/v1/bootstrap", async (c) => {
     const store = c.get("store");
@@ -325,7 +270,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     const { environmentId } = await store.requireEnvironment(project, env);
     const show = c.req.query("show") === "1";
     const exporting = c.req.query("export") === "1";
-    if (show || exporting) assertCanDecrypt(key);
+    if (show || exporting) assertCanReadValues(key);
     let action: AuditAction = "list";
     if (exporting) action = "inject";
     else if (show) action = "get";
@@ -339,7 +284,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
         name: secret.name,
         kind: secret.kind,
         value:
-          exporting || valueVisibleOnGet(key, secret.kind) ? secret.value : undefined,
+          exporting || valueVisibleOnGet(secret.kind) ? secret.value : undefined,
       })),
     });
   });
@@ -351,11 +296,11 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     const env = c.req.param("env");
     const name = c.req.param("name");
     assertScope(key, project, env);
-    assertCanDecrypt(key);
+    assertCanReadValues(key);
     const { environmentId } = await store.requireEnvironment(project, env);
     const secret = await store.getSecretByName(environmentId, name);
     if (secret == null) throw new PolicyError(404, "secret not found");
-    if (!valueVisibleOnGet(key, secret.kind)) {
+    if (!valueVisibleOnGet(secret.kind)) {
       throw new PolicyError(403, "sealed secret values are not returned");
     }
     await store.audit({
@@ -415,15 +360,6 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       let value = item.value;
       if (item.random === true) value = randomSecretValue();
       if (value == null) throw new PolicyError(400, `missing value for ${item.name}`);
-      if (key.mode === "broker" && kind !== "sealed") {
-        throw new PolicyError(403, "broker keys may only create sealed secrets");
-      }
-      if (key.mode === "broker" && item.random !== true) {
-        throw new PolicyError(
-          403,
-          "broker keys must create sealed secrets with random values",
-        );
-      }
       await store.setSecret(environmentId, item.name, value, kind);
       await store.audit({
         keyPrefix: key.keyPrefix,
@@ -445,54 +381,6 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     return c.json({ ok: true });
   });
 
-  app.get("/v1/projects/:project/environments/:env/routes", async (c) => {
-    const key = c.get("key");
-    const store = c.get("store");
-    const project = c.req.param("project");
-    const env = c.req.param("env");
-    assertScope(key, project, env);
-    const { environmentId } = await store.requireEnvironment(project, env);
-    return c.json({ routes: await store.listRoutes(environmentId) });
-  });
-
-  app.put("/v1/projects/:project/environments/:env/routes", async (c) => {
-    const key = c.get("key");
-    const store = c.get("store");
-    const project = c.req.param("project");
-    const env = c.req.param("env");
-    assertScope(key, project, env);
-    assertCanWrite(key);
-    const { environmentId } = await store.requireEnvironment(project, env);
-    const body = await parseBody(putRouteSchema, c.req);
-    const preset = body.preset != null ? routePreset(body.preset) : null;
-    const built =
-      preset ??
-      genericRoute({
-        host: body.host ?? "",
-        header: body.header ?? "Authorization",
-        dummyEnvName: body.dummyEnvName ?? body.secret,
-        dummyValue: body.dummyValue,
-      });
-    const host = body.host ?? built.host;
-    if (host.length === 0) throw new PolicyError(400, "host is required");
-    await store.upsertRoute(environmentId, {
-      host,
-      secretName: body.secret,
-      inject: built.inject,
-      stripHeaders: built.stripHeaders,
-      dummyEnvName: built.dummyEnvName,
-      dummyValue: built.dummyValue,
-    });
-    await store.audit({
-      keyPrefix: key.keyPrefix,
-      action: "route_put",
-      status: "ok",
-      host,
-      secretName: body.secret,
-    });
-    return c.json({ ok: true, host });
-  });
-
   app.get("/v1/keys", manageKeys, async (c) => {
     const includeRevoked = c.req.query("includeRevoked") === "1";
     const keys = await c.get("store").listKeys(includeRevoked);
@@ -504,7 +392,6 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     const generated = randomApiKey(body.type);
     const permission: Permission =
       body.type === "user" ? "full" : (body.permission ?? "read");
-    const mode: KeyMode | null = body.type === "user" ? null : (body.mode ?? "inject");
     if (body.type === "system" && (body.scopes == null || body.scopes.length === 0)) {
       throw new PolicyError(400, "system keys require scopes");
     }
@@ -513,10 +400,13 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       prefix: generated.prefix,
       type: body.type,
       permission,
-      mode,
+      mode: body.type === "user" ? null : "inject",
       label: body.label ?? null,
       scopes: body.type === "system" ? (body.scopes ?? []) : null,
-      expiresAt: expiresAtFromDays(body.expiresInDays ?? 90),
+      expiresAt:
+        body.expiresInMinutes == null
+          ? expiresAtFromDays(body.expiresInDays ?? 90)
+          : new Date(Date.now() + body.expiresInMinutes * 60 * 1000).toISOString(),
     });
     await c.get("store").audit({
       keyPrefix: c.get("key").keyPrefix,

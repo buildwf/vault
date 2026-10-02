@@ -1,4 +1,4 @@
-/** Setup shared by the browser acceptance scripts: an in-process vault with a `demo` project. */
+/** Setup for the browser acceptance script: an in-process vault with a `demo` project. */
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createTestVault, bootstrapUser, authHeaders } from "../src/harness.ts";

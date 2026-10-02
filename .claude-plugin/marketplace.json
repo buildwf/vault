@@ -1,0 +1,14 @@
+{
+  "name": "vault",
+  "description": "Vault: AI-first secrets for Claude Code.",
+  "owner": {
+    "name": "Build With Friends"
+  },
+  "plugins": [
+    {
+      "name": "vault",
+      "source": "./plugin",
+      "description": "AI-first secrets for Claude Code: in-chat prompts, use-without-seeing API calls, scoped handoff, self-healing missing env vars."
+    }
+  ]
+}

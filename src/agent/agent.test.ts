@@ -2,7 +2,6 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateKeyPairSync } from "node:crypto";
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { PassThrough } from "node:stream";
 import { z } from "zod";
@@ -12,8 +11,6 @@ import { VaultClient } from "../client.ts";
 import { AgentTasks } from "./tasks.ts";
 import { AgentRuntime } from "./runtime.ts";
 import { createAgentMcp } from "./mcp.ts";
-import { githubAccess, exchangeCloudflare } from "./provider.ts";
-import { cloudflareHandoff } from "./handoff.ts";
 
 async function fixture() {
   const { app, env } = await createTestVault();
@@ -65,12 +62,12 @@ test("durable receipts survive reopen; immutable IDs and expired dispatch never 
   tasks.close();
   rmSync(directory, { recursive: true });
 });
-test("MCP discovers tools, elicits a URL and negotiates durable Tasks without secret output", async () => {
-  const f = await fixture();
+/** A stdio MCP connection to `runtime`; each call sends one request and reads one reply. */
+function mcpClient(runtime: AgentRuntime) {
   const input = new PassThrough();
   const output = new PassThrough();
-  const handle = serveStdio(() => createAgentMcp(f.runtime), {
-    transport: taskTransport(new StdioServerTransport(input, output), f.runtime),
+  const handle = serveStdio(() => createAgentMcp(runtime), {
+    transport: taskTransport(new StdioServerTransport(input, output), runtime),
   });
   async function rpc(
     method: string,
@@ -103,8 +100,26 @@ test("MCP discovers tools, elicits a URL and negotiates durable Tasks without se
       );
     });
   }
+  return { rpc, close: () => handle.close() };
+}
+
+test("MCP discovers tools, elicits a URL and negotiates durable Tasks without secret output", async () => {
+  const f = await fixture();
+  const { rpc, close } = mcpClient(f.runtime);
   try {
-    expect(await rpc("tools/list", {})).toContain("connect_cloudflare");
+    const listed = z
+      .object({ result: z.object({ tools: z.array(z.object({ name: z.string() })) }) })
+      .parse(JSON.parse(await rpc("tools/list", {})));
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual([
+      "describe_context",
+      "collect_secret",
+      "use_secret",
+      "share_access",
+      "get_task",
+      "cancel_task",
+      "open_panel",
+      "vault_panel",
+    ]);
     const first = crypto.randomUUID();
     expect(
       await rpc("tools/call", {
@@ -162,131 +177,10 @@ test("MCP discovers tools, elicits a URL and negotiates durable Tasks without se
     expect(declined).toContain("cancelled");
     expect(f.tasks.get(third).state).toBe("cancelled");
   } finally {
-    await handle.close();
+    await close();
     await f.close();
   }
 });
-test("GitHub discovers installation and requests exactly one repository with read permissions", async () => {
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  const requests: Request[] = [];
-  const send: typeof fetch = Object.assign(
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      return Response.json(
-        request.method === "GET"
-          ? { id: 17 }
-          : {
-              token: "synthetic-gh",
-              expires_at: new Date(Date.now() + 3600000).toISOString(),
-            },
-      );
-    },
-    { preconnect: fetch.preconnect },
-  );
-  const access = await githubAccess(
-    JSON.stringify({ appId: "123", privateKey }),
-    "owner/repo",
-    send,
-  );
-  expect(access.repository).toBe("owner/repo");
-  expect(requests[0]?.url).toBe("https://api.github.com/repos/owner/repo/installation");
-  expect(z.json().parse(await requests[1]!.json())).toEqual({
-    repositories: ["repo"],
-    permissions: { contents: "read", metadata: "read" },
-  });
-  expect(requests[1]?.redirect).toBe("error");
-});
-test("OAuth callback rejects invalid state; code exchanged once with PKCE and saved without reflection", async () => {
-  const tasks = new AgentTasks(":memory:");
-  const taskId = crypto.randomUUID();
-  tasks.create(taskId, "cloudflare", "CF_TEST");
-  const reserve = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response(),
-  });
-  const port = reserve.port;
-  await reserve.stop(true);
-  let calls = 0;
-  let stored = "";
-  const send: typeof fetch = Object.assign(
-    async (_input: RequestInfo | URL, init?: RequestInit) => {
-      calls++;
-      const body = new URLSearchParams(
-        await new Request("https://provider.test", init).text(),
-      );
-      expect(body.get("code_verifier")?.length).toBeGreaterThan(32);
-      expect(body.get("client_secret")).toBeNull();
-      return Response.json({
-        access_token: "synthetic-oauth",
-        token_type: "Bearer",
-        expires_in: 3600,
-        scope: "workers-platform.read",
-      });
-    },
-    { preconnect: fetch.preconnect },
-  );
-  const callback = `http://127.0.0.1:${port}/callback`;
-  const helper = cloudflareHandoff({
-    tasks,
-    taskId,
-    config: {
-      clientId: "test",
-      redirectUri: callback,
-      scopes: ["workers-platform.read"],
-    },
-    save: async (value) => {
-      stored = value;
-    },
-    send,
-  });
-  try {
-    const auth = new URL(helper.url);
-    expect(auth.searchParams.get("code_challenge_method")).toBe("S256");
-    expect((await fetch(callback + "?state=bad&code=test")).status).toBe(400);
-    expect(calls).toBe(0);
-    const url = callback + `?state=${auth.searchParams.get("state")}&code=test`;
-    const text = await (await fetch(url)).text();
-    expect(text).toContain("stored");
-    expect(text).not.toContain("synthetic-oauth");
-    expect(stored).toContain("synthetic-oauth");
-    await fetch(url);
-    expect(calls).toBe(1);
-  } finally {
-    await helper.stop();
-    tasks.close();
-  }
-});
-test("OAuth rejects missing required scope", async () => {
-  const send: typeof fetch = Object.assign(
-    async () =>
-      Response.json({
-        access_token: "synthetic",
-        token_type: "Bearer",
-        expires_in: 3600,
-        scope: "different",
-      }),
-    { preconnect: fetch.preconnect },
-  );
-  expect(
-    exchangeCloudflare(
-      {
-        clientId: "x",
-        redirectUri: "http://127.0.0.1:1/callback",
-        code: "code",
-        verifier: "verifier",
-        scopes: ["required"],
-      },
-      send,
-    ),
-  ).rejects.toThrow("Required OAuth scope");
-});
-
 test("pending collection resumes with the same request and a fresh browser URL after host restart", async () => {
   const f = await fixture();
   const id = crypto.randomUUID();
@@ -314,78 +208,205 @@ test("pending collection resumes with the same request and a fresh browser URL a
   }
 });
 
-test("Cloudflare connection persists in Vault, resumes broker reads, and refuses expired access", async () => {
+/** The `requestState` an input_required reply asks the client to echo back. */
+const stateOf = (reply: string) =>
+  z.object({ result: z.object({ requestState: z.string() }) }).parse(JSON.parse(reply)).result
+    .requestState;
+
+test("in-chat prompts store secrets; use_secret and share_access ask first; panel adds", async () => {
   const f = await fixture();
-  const reserve = Bun.serve({
+  const { rpc, close } = mcpClient(f.runtime);
+  const caps = { elicitation: { form: {}, url: {} } };
+  const allow = { vault: { action: "accept", content: { decision: "allow" } } };
+  const upstream = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => new Response(),
+    fetch: (request) => Response.json({ saw: request.headers.get("authorization") }),
   });
-  const callback = `http://127.0.0.1:${reserve.port}/callback`;
-  await reserve.stop(true);
-  await f.client.patchSecrets("demo", "dev", {
-    set: [
-      {
-        name: "VAULT_CLOUDFLARE_OAUTH",
-        kind: "config",
-        value: JSON.stringify({
-          clientId: "test",
-          redirectUri: callback,
-          scopes: ["workers-platform.read"],
-        }),
-      },
-    ],
-  });
-  const send: typeof fetch = Object.assign(
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      if (request.method === "POST")
-        return Response.json({
-          access_token: "synthetic-cf-runtime",
-          token_type: "Bearer",
-          expires_in: 3600,
-        });
-      expect(request.headers.get("Authorization")).toBe("Bearer synthetic-cf-runtime");
-      return Response.json({ result: [], echo: "synthetic-cf-runtime" });
-    },
-    { preconnect: fetch.preconnect },
-  );
-  const runtime = new AgentRuntime(f.client, "demo", "dev", f.tasks, send);
-  const id = crypto.randomUUID();
   try {
-    const task = await runtime.connectCloudflare(id);
-    const auth = new URL(task.url!);
-    const response = await fetch(
-      `${callback}?state=${auth.searchParams.get("state")}&code=test`,
+    const collect = {
+      name: "collect_secret",
+      arguments: { requestId: crypto.randomUUID(), name: "API_KEY" },
+    };
+    expect(await rpc("tools/call", collect, caps)).toContain('"mode":"form"');
+    const typed = { vault: { action: "accept", content: { value: "sk_synthetic_123" } } };
+    const saved = await rpc("tools/call", { ...collect, inputResponses: typed }, caps);
+    expect(saved).toContain("stored");
+    expect(saved).not.toContain("sk_synthetic_123");
+
+    const use = {
+      name: "use_secret",
+      arguments: {
+        method: "GET",
+        url: `http://127.0.0.1:${upstream.port}/`,
+        headers: { Authorization: "Bearer {{API_KEY}}" },
+      },
+    };
+    const asked = await rpc("tools/call", use, caps);
+    expect(asked).toContain("send API_KEY to 127.0.0.1");
+    const requestState = stateOf(asked);
+    const deny = { vault: { action: "accept", content: { decision: "deny" } } };
+    expect(await rpc("tools/call", { ...use, inputResponses: deny, requestState }, caps)).toContain(
+      "denied",
     );
-    expect(await response.text()).toContain("stored");
-    await runtime.close();
-    const restarted = new AgentRuntime(f.client, "demo", "dev", f.tasks, send);
-    expect(
-      JSON.stringify(await restarted.readProvider(task.taskId, "/client/v4/accounts")),
-    ).not.toContain("synthetic-cf-runtime");
-    expect(
-      restarted.readProvider(task.taskId, "/client/v4/user/tokens"),
-    ).rejects.toThrow();
-    await f.client.patchSecrets("demo", "dev", {
-      set: [
-        {
-          name: task.target,
-          kind: "secret",
-          value: JSON.stringify({
-            accessToken: "synthetic-cf-runtime",
-            expiresAt: 1,
-            scopes: "workers-platform.read",
-          }),
-        },
-      ],
-    });
-    expect(restarted.readProvider(task.taskId, "/client/v4/accounts")).rejects.toThrow(
-      "expired",
+    // An allow that does not echo the question's state is asked again.
+    expect(await rpc("tools/call", { ...use, inputResponses: allow }, caps)).toContain(
+      "input_required",
     );
-    await restarted.close();
+    const used = await rpc("tools/call", { ...use, inputResponses: allow, requestState }, caps);
+    expect(used).toContain("Bearer {{API_KEY}}");
+    expect(used).not.toContain("sk_synthetic_123");
+    // The grant holds: no second prompt.
+    expect(await rpc("tools/call", use, caps)).toContain("Bearer {{API_KEY}}");
+
+    const share = { name: "share_access", arguments: { minutes: 5 } };
+    const shareState = stateOf(await rpc("tools/call", share, caps));
+    const shared = z
+      .object({ result: z.object({ content: z.array(z.object({ text: z.string() })) }) })
+      .parse(
+        JSON.parse(
+          await rpc(
+            "tools/call",
+            { ...share, inputResponses: allow, requestState: shareState },
+            caps,
+          ),
+        ),
+      );
+    const key = z
+      .object({ env: z.object({ VAULT_API_KEY: z.string() }) })
+      .parse(JSON.parse(shared.result.content[0]!.text)).env.VAULT_API_KEY;
+    const meta = await new VaultClient(f.client.apiUrl, key).listSecretMeta("demo", "dev");
+    expect(meta.secrets.map((secret) => secret.name)).toContain("API_KEY");
+
+    const panel = await rpc(
+      "tools/call",
+      { name: "vault_panel", arguments: { add: { name: "PANEL_KEY", value: "from-panel" } } },
+      caps,
+    );
+    expect(panel).toContain('\\"added\\":\\"stored\\"');
+    expect(panel).not.toContain("from-panel");
+    expect(await rpc("resources/read", { uri: "ui://vault/panel.html" }, caps)).toContain(
+      "text/html;profile=mcp-app",
+    );
   } finally {
-    await runtime.close();
+    await upstream.stop(true);
+    await close();
+    await f.close();
+  }
+});
+
+test("older clients (initialize handshake, like Claude Code 2.1.274) get real prompts", async () => {
+  const f = await fixture();
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => Response.json({ saw: request.headers.get("authorization") }),
+  });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const handle = serveStdio(() => createAgentMcp(f.runtime), {
+    transport: taskTransport(new StdioServerTransport(input, output), f.runtime),
+  });
+  const replies = new Map<number, string>();
+  const prompts: string[] = [];
+  let buffer = "";
+  const send = (message: Record<string, unknown>) =>
+    input.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+  output.on("data", (data: Buffer) => {
+    buffer += data.toString();
+    for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, end);
+      buffer = buffer.slice(end + 1);
+      const message = z
+        .looseObject({
+          id: z.number().optional(),
+          method: z.string().optional(),
+          params: z
+            .looseObject({
+              message: z.string(),
+              requestedSchema: z.object({ properties: z.record(z.string(), z.unknown()) }),
+            })
+            .optional(),
+        })
+        .parse(JSON.parse(line));
+      if (message.method === "elicitation/create" && message.params != null) {
+        // Answer like a person would: allow approvals, type a value for secrets.
+        const decision = message.params.requestedSchema.properties["decision"] != null;
+        prompts.push(message.params.message);
+        send({
+          id: message.id,
+          result: {
+            action: "accept",
+            content: decision ? { decision: "allow" } : { value: "typed-in-chat" },
+          },
+        });
+      } else if (message.id != null) replies.set(message.id, line);
+    }
+  });
+  const reply = async (id: number) => {
+    for (let tries = 0; tries < 300 && !replies.has(id); tries++) await Bun.sleep(10);
+    return replies.get(id) ?? "";
+  };
+  try {
+    send({
+      id: 0,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-11-25",
+        capabilities: { elicitation: {} },
+        clientInfo: { name: "claude-code", version: "2.1.274" },
+      },
+    });
+    await reply(0);
+    send({ method: "notifications/initialized" });
+    send({
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "collect_secret",
+        arguments: { requestId: crypto.randomUUID(), name: "LEGACY_KEY" },
+      },
+    });
+    expect(await reply(1)).toContain("stored");
+    send({
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "use_secret",
+        arguments: {
+          method: "GET",
+          url: `http://127.0.0.1:${upstream.port}/`,
+          headers: { Authorization: "Bearer {{LEGACY_KEY}}" },
+        },
+      },
+    });
+    const used = await reply(2);
+    expect(used).toContain("Bearer {{LEGACY_KEY}}");
+    expect(used).not.toContain("typed-in-chat");
+    expect(prompts.length).toBe(2);
+  } finally {
+    await upstream.stop(true);
+    await handle.close();
+    await f.close();
+  }
+});
+
+test("use_secret approvals expire and can be revoked", async () => {
+  const f = await fixture();
+  try {
+    const request = {
+      method: "GET" as const,
+      url: "https://api.example.com/v1",
+      headers: { Authorization: "Bearer {{API_KEY}}" },
+    };
+    expect(f.runtime.ungranted(request).names).toEqual(["API_KEY"]);
+    f.runtime.grant(["API_KEY"], "api.example.com");
+    expect(f.runtime.ungranted(request).names).toEqual([]);
+    f.runtime.revokeGrant("API_KEY", "api.example.com");
+    expect(f.runtime.ungranted(request).names).toEqual(["API_KEY"]);
+    f.runtime.grant(["API_KEY"], "api.example.com", 0);
+    expect(f.runtime.ungranted(request).names).toEqual(["API_KEY"]);
+  } finally {
     await f.close();
   }
 });
