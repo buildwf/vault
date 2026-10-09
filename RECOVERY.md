@@ -4,6 +4,12 @@ This runbook covers the isolated `bwf-vault` D1 database. It does not authorize
 restoring a live database: Time Travel restore is destructive and requires an
 explicit incident decision, a target bookmark/timestamp, and a current export.
 
+A vault deployed with `VAULT_STORAGE=convex` keeps its rows in Convex instead,
+and `recovery:rehearse` refuses to run against it. Back it up with Convex's own
+backups (`bunx convex export --prod --path <restricted file>`). As with D1,
+the export holds ciphertext and keyed hashes only, and a restore is usable only
+with a Secrets Store root whose wrap is in the restored `masterKeyWraps` table.
+
 ## Routine proof
 
 From the repository root, record the current Time Travel bookmark and create

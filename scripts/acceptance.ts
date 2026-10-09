@@ -112,8 +112,9 @@ async function waitForWorker(url: string, child: WorkerProcess): Promise<void> {
 
 async function applyLocalMigrations(persistTo: string): Promise<void> {
   const { worker: local } = await config({ mode: undefined, isPreview: false });
-  const databaseId = local.env.DB.id;
-  if (databaseId == null) throw new Error("cloudflare.config.ts DB binding has no id");
+  const databaseId = "DB" in local.env ? local.env.DB.id : undefined;
+  if (databaseId == null)
+    throw new Error("acceptance runs the D1 Worker; unset VAULT_STORAGE=convex for it");
   const child = Bun.spawn(
     ["bunx", "cf", "d1", "migrations", "apply", databaseId, "--local", "--persist-to", persistTo],
     { cwd: packageRoot, stdin: "ignore", stdout: "pipe", stderr: "pipe" },

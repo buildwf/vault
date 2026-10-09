@@ -12,6 +12,6 @@
     "allowImportingTsExtensions": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["scripts/**/*.ts", "src/**/*.ts", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"],
+  "include": ["convex/**/*.ts", "scripts/**/*.ts", "src/**/*.ts", "cloudflare.config.ts", ".cloudflare/types/index.d.ts"],
   "exclude": ["src/collection/form.ts", "src/agent/panel/panel.ts"]
 }

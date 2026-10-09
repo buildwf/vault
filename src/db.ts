@@ -1,21 +1,21 @@
 /**
- * `VaultStore` — every SQL statement, and the encryption boundary around them.
+ * `VaultStore` — the encryption boundary around a `VaultBackend`.
  *
  * Values are encrypted on the way in and decrypted on the way out here, so no
  * route handler ever holds a ciphertext and no query ever holds a plaintext
  * name. A secret's name is written twice: `key_encrypted` for retrieval and
  * `key_hash` (keyed HMAC) for lookup and uniqueness.
  *
- * Audit paging is keyset, not offset: `(created_at DESC, id DESC)` matches the
- * index exactly, so a deep page is a range scan and a row inserted mid-scroll
- * cannot shift the window.
+ * The rows themselves live behind `VaultBackend` (D1 or Convex); this class
+ * never builds a query.
  *
  * Failures throw `PolicyError` with the HTTP status they should surface, which
- * is what lets `app.ts` translate a constraint violation into a 404 or 409
- * without re-deriving the reason.
+ * is what lets `app.ts` answer a refused write with a 404 or 409 without
+ * re-deriving the reason.
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/database/}
  */
+import type { KeyRow, SecretRow, VaultBackend } from "./backend.ts";
 import type { VaultCrypto } from "./crypto.ts";
 import { PolicyError } from "./policy.ts";
 import type {
@@ -31,45 +31,8 @@ import type {
   AuditRecord,
 } from "./types.ts";
 
-type KeyRow = {
-  id: string;
-  key_prefix: string;
-  key_hash: string;
-  type: KeyType;
-  label_encrypted: string | null;
-  scopes_encrypted: string | null;
-  permission: Permission;
-  mode: KeyMode | null;
-  created_at: string;
-  last_used_at: string | null;
-  expires_at: string;
-  revoked: number;
-  revoked_at: string | null;
-};
-
-type SecretRow = {
-  id: string;
-  environment_id: string;
-  key_encrypted: string;
-  key_hash: string;
-  value_encrypted: string;
-  kind: SecretKind;
-  updated_at: string;
-};
-
-type AuditRow = {
-  id: string;
-  key_prefix: string;
-  action: AuditAction;
-  host_encrypted: string | null;
-  secret_name_encrypted: string | null;
-  status: string;
-  created_at: string;
-};
-
 const LAST_USER_KEY = "cannot revoke the last active user key";
-const INSERT_ENVIRONMENT =
-  "INSERT INTO environments (id, project_id, name, created_at) VALUES (?, ?, ?, ?)";
+const DEFAULT_ENVIRONMENTS = ["dev", "prod"];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -79,28 +42,25 @@ function newId(): string {
   return crypto.randomUUID();
 }
 
-function isUniqueConstraintFailure(cause: unknown): boolean {
-  return String(cause).includes("UNIQUE constraint failed");
-}
+type NewKey = {
+  plaintext: string;
+  prefix: string;
+  type: KeyType;
+  permission: Permission;
+  mode: KeyMode | null;
+  label: string | null;
+  scopes: Scope[] | null;
+  expiresAt: string;
+};
 
 export class VaultStore {
   constructor(
-    private readonly db: D1Database,
+    private readonly backend: VaultBackend,
     private readonly vaultCrypto: VaultCrypto,
   ) {}
 
-  async insertKey(input: {
-    plaintext: string;
-    prefix: string;
-    type: KeyType;
-    permission: Permission;
-    mode: KeyMode | null;
-    label: string | null;
-    scopes: Scope[] | null;
-    expiresAt: string;
-  }): Promise<void> {
-    const insertKey = await this.prepareInsertKey(input);
-    await insertKey.run();
+  async insertKey(input: NewKey): Promise<void> {
+    await this.backend.insertKey({ key: await this.keyRow(input) });
   }
 
   async claimBootstrapKey(input: {
@@ -109,114 +69,68 @@ export class VaultStore {
     label: string;
     expiresAt: string;
   }): Promise<void> {
-    const claimedAt = nowIso();
-    try {
-      await this.db.batch([
-        this.db
-          .prepare(
-            `INSERT INTO bootstrap_state (singleton, claimed_at, key_prefix)
-             VALUES (1, ?, ?)`,
-          )
-          .bind(claimedAt, input.prefix),
-        await this.prepareInsertKey({
-          ...input,
-          type: "user",
-          permission: "full",
-          mode: null,
-          scopes: null,
-        }),
-      ]);
-    } catch {
-      throw new PolicyError(409, "already bootstrapped");
-    }
+    const claimed = await this.backend.claimBootstrap({
+      claimedAt: nowIso(),
+      key: await this.keyRow({
+        ...input,
+        type: "user",
+        permission: "full",
+        mode: null,
+        scopes: null,
+      }),
+    });
+    if (!claimed) throw new PolicyError(409, "already bootstrapped");
   }
 
   async isBootstrapped(): Promise<boolean> {
-    const row = await this.db
-      .prepare("SELECT singleton FROM bootstrap_state WHERE singleton = 1")
-      .first<{ singleton: number }>();
-    return row != null;
+    return this.backend.isBootstrapped({});
   }
 
-  private async prepareInsertKey(input: {
-    plaintext: string;
-    prefix: string;
-    type: KeyType;
-    permission: Permission;
-    mode: KeyMode | null;
-    label: string | null;
-    scopes: Scope[] | null;
-    expiresAt: string;
-  }): Promise<D1PreparedStatement> {
-    const hash = await this.vaultCrypto.sha256(input.plaintext);
-    const labelEncrypted =
-      input.label != null ? await this.vaultCrypto.encrypt(input.label) : null;
-    const scopesEncrypted =
-      input.scopes != null
-        ? await this.vaultCrypto.encrypt(JSON.stringify(input.scopes))
-        : null;
-    return this.db
-      .prepare(
-        `INSERT INTO api_keys (
-          id, key_prefix, key_hash, type, label_encrypted, scopes_encrypted,
-          permission, mode, created_at, expires_at, revoked
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      )
-      .bind(
-        newId(),
-        input.prefix,
-        hash,
-        input.type,
-        labelEncrypted,
-        scopesEncrypted,
-        input.permission,
-        input.mode,
-        nowIso(),
-        input.expiresAt,
-      );
+  private async keyRow(input: NewKey): Promise<KeyRow> {
+    return {
+      id: newId(),
+      keyPrefix: input.prefix,
+      keyHash: await this.vaultCrypto.sha256(input.plaintext),
+      type: input.type,
+      labelEncrypted:
+        input.label != null ? await this.vaultCrypto.encrypt(input.label) : null,
+      scopesEncrypted:
+        input.scopes != null
+          ? await this.vaultCrypto.encrypt(JSON.stringify(input.scopes))
+          : null,
+      permission: input.permission,
+      mode: input.mode,
+      createdAt: nowIso(),
+      lastUsedAt: null,
+      expiresAt: input.expiresAt,
+      revoked: false,
+      revokedAt: null,
+    };
   }
 
   async findKeyByPlaintext(plaintext: string): Promise<ApiKeyRecord | null> {
-    const hash = await this.vaultCrypto.sha256(plaintext);
-    const row = await this.db
-      .prepare("SELECT * FROM api_keys WHERE key_hash = ?")
-      .bind(hash)
-      .first<KeyRow>();
-    if (row == null) return null;
-    return this.toApiKey(row);
+    const keyHash = await this.vaultCrypto.sha256(plaintext);
+    const row = await this.backend.findKeyByHash({ keyHash });
+    return row == null ? null : this.toApiKey(row);
   }
 
   async findKeyByPrefix(prefix: string): Promise<ApiKeyRecord | null> {
-    const row = await this.db
-      .prepare("SELECT * FROM api_keys WHERE key_prefix = ?")
-      .bind(prefix)
-      .first<KeyRow>();
+    const row = await this.backend.findKeyByPrefix({ keyPrefix: prefix });
     return row == null ? null : this.toApiKey(row);
   }
 
   async listKeys(includeRevoked = false): Promise<ApiKeyRecord[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT * FROM api_keys
-         ${includeRevoked ? "" : "WHERE revoked = 0"}
-         ORDER BY created_at`,
-      )
-      .all<KeyRow>();
-    return Promise.all((result.results ?? []).map((row) => this.toApiKey(row)));
+    const rows = await this.backend.listKeys({ includeRevoked });
+    return Promise.all(rows.map((row) => this.toApiKey(row)));
   }
 
   async revokeKey(prefix: string): Promise<boolean> {
-    const result = await guardLastUserKey(this.revokeStatement(prefix).run());
-    return (result.meta.changes ?? 0) > 0;
-  }
-
-  private revokeStatement(prefix: string): D1PreparedStatement {
-    return this.db
-      .prepare(
-        `UPDATE api_keys SET revoked = 1, revoked_at = ?
-         WHERE key_prefix = ? AND revoked = 0`,
-      )
-      .bind(nowIso(), prefix);
+    const outcome = await this.backend.revokeKey({
+      keyPrefix: prefix,
+      revokedAt: nowIso(),
+    });
+    if (outcome === "last_user_key") throw new PolicyError(409, LAST_USER_KEY);
+    return outcome === "revoked";
   }
 
   async rotateKey(
@@ -227,109 +141,72 @@ export class VaultStore {
       expiresAt: string;
     },
   ): Promise<void> {
-    await guardLastUserKey(
-      this.db.batch([
-        await this.prepareInsertKey({
-          ...replacement,
-          type: current.type,
-          permission: current.permission,
-          mode: current.mode,
-          label: current.label,
-          scopes: current.scopes,
-        }),
-        this.revokeStatement(current.keyPrefix),
-      ]),
-    );
+    const outcome = await this.backend.rotateKey({
+      key: await this.keyRow({
+        ...replacement,
+        type: current.type,
+        permission: current.permission,
+        mode: current.mode,
+        label: current.label,
+        scopes: current.scopes,
+      }),
+      revokePrefix: current.keyPrefix,
+      revokedAt: nowIso(),
+    });
+    if (outcome === "last_user_key") throw new PolicyError(409, LAST_USER_KEY);
   }
 
   async touchKey(prefix: string): Promise<void> {
-    await this.db
-      .prepare("UPDATE api_keys SET last_used_at = ? WHERE key_prefix = ?")
-      .bind(nowIso(), prefix)
-      .run();
+    await this.backend.touchKey({ keyPrefix: prefix, at: nowIso() });
   }
 
   async createProject(name: string): Promise<{ id: string; name: string }> {
     const id = newId();
     const normalized = name.toLowerCase();
-    try {
-      await this.db
-        .prepare("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind(id, normalized, nowIso())
-        .run();
-    } catch (error) {
-      if (isUniqueConstraintFailure(error)) {
-        throw new PolicyError(409, `project "${normalized}" already exists`);
-      }
-      throw error;
-    }
-    const created = nowIso();
-    for (const env of ["dev", "prod"]) {
-      await this.db.prepare(INSERT_ENVIRONMENT).bind(newId(), id, env, created).run();
-    }
+    const created = await this.backend.createProject({
+      project: { id, name: normalized, createdAt: nowIso() },
+      environments: DEFAULT_ENVIRONMENTS.map((env) => ({ id: newId(), name: env })),
+    });
+    if (!created) throw new PolicyError(409, `project "${normalized}" already exists`);
     return { id, name: normalized };
   }
 
   async listProjects(): Promise<string[]> {
-    const result = await this.db
-      .prepare("SELECT name FROM projects ORDER BY name")
-      .all<{ name: string }>();
-    return (result.results ?? []).map((row) => row.name);
+    return this.backend.listProjects({});
   }
 
   async getProject(name: string): Promise<{ id: string; name: string } | null> {
-    return this.db
-      .prepare("SELECT id, name FROM projects WHERE name = ?")
-      .bind(name.toLowerCase())
-      .first<{ id: string; name: string }>();
+    return this.backend.getProject({ name: name.toLowerCase() });
   }
 
   async deleteProject(name: string): Promise<boolean> {
     const project = await this.getProject(name);
     if (project == null) return false;
-    await this.db.prepare("DELETE FROM projects WHERE id = ?").bind(project.id).run();
+    await this.backend.deleteProject({ id: project.id });
     return true;
   }
 
   async createEnvironment(projectId: string, name: string): Promise<void> {
     const normalized = name.toLowerCase();
-    try {
-      await this.db
-        .prepare(INSERT_ENVIRONMENT)
-        .bind(newId(), projectId, normalized, nowIso())
-        .run();
-    } catch (error) {
-      if (isUniqueConstraintFailure(error)) {
-        throw new PolicyError(409, `environment "${normalized}" already exists`);
-      }
-      throw error;
-    }
+    const created = await this.backend.createEnvironment({
+      environment: { id: newId(), projectId, name: normalized, createdAt: nowIso() },
+    });
+    if (!created) throw new PolicyError(409, `environment "${normalized}" already exists`);
   }
 
   async deleteEnvironment(projectId: string, name: string): Promise<boolean> {
-    const result = await this.db
-      .prepare("DELETE FROM environments WHERE project_id = ? AND name = ?")
-      .bind(projectId, name.toLowerCase())
-      .run();
-    return (result.meta.changes ?? 0) > 0;
+    return this.backend.deleteEnvironment({ projectId, name: name.toLowerCase() });
   }
 
   async listEnvironments(projectId: string): Promise<string[]> {
-    const result = await this.db
-      .prepare("SELECT name FROM environments WHERE project_id = ? ORDER BY name")
-      .bind(projectId)
-      .all<{ name: string }>();
-    return (result.results ?? []).map((row) => row.name);
+    return this.backend.listEnvironments({ projectId });
   }
 
   async getEnvironment(
     projectId: string,
     name: string,
   ): Promise<{ id: string; name: string } | null> {
-    return this.db
-      .prepare("SELECT id, name FROM environments WHERE project_id = ? AND name = ?")
-      .bind(projectId, name.toLowerCase())
-      .first<{ id: string; name: string }>();
+    return this.backend.getEnvironment({ projectId, name: name.toLowerCase() });
   }
 
   async requireEnvironment(
@@ -344,11 +221,7 @@ export class VaultStore {
   }
 
   async listSecretRows(environmentId: string): Promise<SecretRow[]> {
-    const result = await this.db
-      .prepare("SELECT * FROM secrets WHERE environment_id = ?")
-      .bind(environmentId)
-      .all<SecretRow>();
-    return result.results ?? [];
+    return this.backend.listSecretRows({ environmentId });
   }
 
   /** Names and kinds only; values stay encrypted. */
@@ -357,7 +230,7 @@ export class VaultStore {
     const meta: SecretMeta[] = [];
     for (const row of rows) {
       meta.push({
-        name: await this.vaultCrypto.decrypt(row.key_encrypted),
+        name: await this.vaultCrypto.decrypt(row.keyEncrypted),
         kind: row.kind,
       });
     }
@@ -373,9 +246,27 @@ export class VaultStore {
 
   private async decryptSecret(row: SecretRow): Promise<SecretRecord> {
     return {
-      name: await this.vaultCrypto.decrypt(row.key_encrypted),
-      value: await this.vaultCrypto.decrypt(row.value_encrypted),
+      name: await this.vaultCrypto.decrypt(row.keyEncrypted),
+      value: await this.vaultCrypto.decrypt(row.valueEncrypted),
       kind: row.kind,
+    };
+  }
+
+  private async secretRow(
+    environmentId: string,
+    name: string,
+    value: string,
+    kind: SecretKind,
+  ): Promise<SecretRow> {
+    if (value.length === 0) throw new PolicyError(400, "secret value must not be empty");
+    return {
+      id: newId(),
+      environmentId,
+      keyEncrypted: await this.vaultCrypto.encrypt(name),
+      keyHash: await this.vaultCrypto.lookupHash(name),
+      valueEncrypted: await this.vaultCrypto.encrypt(value),
+      kind,
+      updatedAt: nowIso(),
     };
   }
 
@@ -385,23 +276,8 @@ export class VaultStore {
     value: string,
     kind: SecretKind,
   ): Promise<void> {
-    if (value.length === 0) throw new PolicyError(400, "secret value must not be empty");
-    const row = await this.db
-      .prepare(
-        `INSERT INTO secrets (id, environment_id, key_encrypted, key_hash, value_encrypted, kind, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(environment_id, key_hash) DO NOTHING RETURNING id`,
-      )
-      .bind(
-        newId(),
-        environmentId,
-        await this.vaultCrypto.encrypt(name),
-        await this.vaultCrypto.lookupHash(name),
-        await this.vaultCrypto.encrypt(value),
-        kind,
-        nowIso(),
-      )
-      .first<{ id: string }>();
-    if (row == null)
+    const secret = await this.secretRow(environmentId, name, value, kind);
+    if (!(await this.backend.insertSecret({ secret })))
       throw new PolicyError(409, "secret already exists; no value was changed");
   }
 
@@ -411,37 +287,13 @@ export class VaultStore {
     value: string,
     kind: SecretKind,
   ): Promise<void> {
-    if (value.length === 0) throw new PolicyError(400, "secret value must not be empty");
-    await this.db
-      .prepare(
-        `INSERT INTO secrets (
-          id, environment_id, key_encrypted, key_hash, value_encrypted, kind, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(environment_id, key_hash) DO UPDATE SET
-          key_encrypted = excluded.key_encrypted,
-          value_encrypted = excluded.value_encrypted,
-          kind = excluded.kind,
-          updated_at = excluded.updated_at`,
-      )
-      .bind(
-        newId(),
-        environmentId,
-        await this.vaultCrypto.encrypt(name),
-        await this.vaultCrypto.lookupHash(name),
-        await this.vaultCrypto.encrypt(value),
-        kind,
-        nowIso(),
-      )
-      .run();
+    const secret = await this.secretRow(environmentId, name, value, kind);
+    await this.backend.upsertSecret({ secret });
   }
 
   async deleteSecret(environmentId: string, name: string): Promise<boolean> {
     const keyHash = await this.vaultCrypto.lookupHash(name);
-    const result = await this.db
-      .prepare("DELETE FROM secrets WHERE environment_id = ? AND key_hash = ?")
-      .bind(environmentId, keyHash)
-      .run();
-    return (result.meta.changes ?? 0) > 0;
+    return this.backend.deleteSecret({ environmentId, keyHash });
   }
 
   async getSecretByName(
@@ -449,10 +301,7 @@ export class VaultStore {
     name: string,
   ): Promise<SecretRecord | null> {
     const keyHash = await this.vaultCrypto.lookupHash(name);
-    const row = await this.db
-      .prepare("SELECT * FROM secrets WHERE environment_id = ? AND key_hash = ?")
-      .bind(environmentId, keyHash)
-      .first<SecretRow>();
+    const row = await this.backend.getSecretRow({ environmentId, keyHash });
     return row == null ? null : this.decryptSecret(row);
   }
 
@@ -462,25 +311,20 @@ export class VaultStore {
     status: string;
     secretName?: string;
   }): Promise<void> {
-    const secretNameEncrypted =
-      input.secretName != null ? await this.vaultCrypto.encrypt(input.secretName) : null;
-    await this.db
-      .prepare(
-        `INSERT INTO audit_events (
-          id, key_prefix, action, host_encrypted, secret_name_encrypted,
-          status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        newId(),
-        input.keyPrefix,
-        input.action,
-        null,
-        secretNameEncrypted,
-        input.status,
-        nowIso(),
-      )
-      .run();
+    await this.backend.insertAudit({
+      event: {
+        id: newId(),
+        keyPrefix: input.keyPrefix,
+        action: input.action,
+        hostEncrypted: null,
+        secretNameEncrypted:
+          input.secretName != null
+            ? await this.vaultCrypto.encrypt(input.secretName)
+            : null,
+        status: input.status,
+        createdAt: nowIso(),
+      },
+    });
   }
 
   async listAudit(input: {
@@ -488,92 +332,63 @@ export class VaultStore {
     beforeCreatedAt?: string;
     beforeId?: string;
   }): Promise<AuditRecord[]> {
-    const boundedLimit = Math.max(1, Math.min(input.limit, 200));
-    const cursorClause =
-      input.beforeCreatedAt != null && input.beforeId != null
-        ? "WHERE created_at < ? OR (created_at = ? AND id < ?)"
-        : "";
-    const statement = this.db.prepare(
-      `SELECT * FROM audit_events
-       ${cursorClause}
-       ORDER BY created_at DESC, id DESC
-       LIMIT ?`,
-    );
-    const result =
-      input.beforeCreatedAt != null && input.beforeId != null
-        ? await statement
-            .bind(
-              input.beforeCreatedAt,
-              input.beforeCreatedAt,
-              input.beforeId,
-              boundedLimit,
-            )
-            .all<AuditRow>()
-        : await statement.bind(boundedLimit).all<AuditRow>();
+    const rows = await this.backend.listAudit({
+      limit: Math.max(1, Math.min(input.limit, 200)),
+      before:
+        input.beforeCreatedAt != null && input.beforeId != null
+          ? { createdAt: input.beforeCreatedAt, id: input.beforeId }
+          : null,
+    });
     return Promise.all(
-      (result.results ?? []).map(async (row) => ({
+      rows.map(async (row) => ({
         id: row.id,
-        keyPrefix: row.key_prefix,
+        keyPrefix: row.keyPrefix,
         action: row.action,
         host:
-          row.host_encrypted == null
+          row.hostEncrypted == null
             ? null
-            : await this.vaultCrypto.decrypt(row.host_encrypted),
+            : await this.vaultCrypto.decrypt(row.hostEncrypted),
         secretName:
-          row.secret_name_encrypted == null
+          row.secretNameEncrypted == null
             ? null
-            : await this.vaultCrypto.decrypt(row.secret_name_encrypted),
+            : await this.vaultCrypto.decrypt(row.secretNameEncrypted),
         status: row.status,
-        createdAt: row.created_at,
+        createdAt: row.createdAt,
       })),
     );
   }
 
   async pruneAudit(before: string): Promise<number> {
-    const result = await this.db
-      .prepare("DELETE FROM audit_events WHERE created_at < ?")
-      .bind(before)
-      .run();
-    return result.meta.changes ?? 0;
+    return this.backend.pruneAudit({ before });
   }
 
   private async toApiKey(row: KeyRow): Promise<ApiKeyRecord> {
-    // SAFETY: createKey encrypts the JSON serialization of its validated Scope[];
+    // SAFETY: keyRow encrypts the JSON serialization of its validated Scope[];
     // rotateKey preserves that value when issuing the replacement key.
     const scopes =
-      row.scopes_encrypted != null
-        ? (JSON.parse(await this.vaultCrypto.decrypt(row.scopes_encrypted)) as Scope[])
+      row.scopesEncrypted != null
+        ? (JSON.parse(await this.vaultCrypto.decrypt(row.scopesEncrypted)) as Scope[])
         : null;
     return {
       id: row.id,
-      keyPrefix: row.key_prefix,
+      keyPrefix: row.keyPrefix,
       type: row.type,
       label:
-        row.label_encrypted == null
+        row.labelEncrypted == null
           ? null
-          : await this.vaultCrypto.decrypt(row.label_encrypted),
+          : await this.vaultCrypto.decrypt(row.labelEncrypted),
       permission: row.permission,
       mode: row.mode,
       scopes,
-      createdAt: row.created_at,
-      lastUsedAt: row.last_used_at,
-      expiresAt: row.expires_at,
-      revoked: row.revoked === 1,
-      revokedAt: row.revoked_at,
+      createdAt: row.createdAt,
+      lastUsedAt: row.lastUsedAt,
+      expiresAt: row.expiresAt,
+      revoked: row.revoked,
+      revokedAt: row.revokedAt,
     };
   }
 }
 
 function byName(left: { name: string }, right: { name: string }): number {
   return left.name.localeCompare(right.name);
-}
-
-/** The `api_keys` trigger refuses to revoke the last active user key. */
-async function guardLastUserKey<T>(operation: Promise<T>): Promise<T> {
-  try {
-    return await operation;
-  } catch (error) {
-    if (String(error).includes(LAST_USER_KEY)) throw new PolicyError(409, LAST_USER_KEY);
-    throw error;
-  }
 }

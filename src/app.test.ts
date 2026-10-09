@@ -59,7 +59,7 @@ describe("worker api", () => {
   });
 
   test("empty values are rejected and ciphertext is not plaintext", async () => {
-    const { app, env, store } = await createTestVault();
+    const { app, env, store, backend } = await createTestVault();
     const key = await bootstrapUser(app, env);
     await app.request(
       "/v1/projects",
@@ -97,11 +97,11 @@ describe("worker api", () => {
     const blob = JSON.stringify(dump);
     expect(blob.includes("super-secret-value")).toBe(false);
     expect(blob.includes("TOKEN")).toBe(false);
-    const auditRow = await env.DB.prepare(
-      "SELECT secret_name_encrypted FROM audit_events WHERE action = 'set' ORDER BY created_at DESC LIMIT 1",
-    ).first<{ secret_name_encrypted: string }>();
-    expect(auditRow).not.toBeNull();
-    expect(auditRow!.secret_name_encrypted.includes("TOKEN")).toBe(false);
+    const auditRow = (await backend.listAudit({ limit: 200, before: null })).find(
+      (row) => row.action === "set",
+    );
+    expect(auditRow?.secretNameEncrypted).toBeString();
+    expect(auditRow!.secretNameEncrypted!.includes("TOKEN")).toBe(false);
   });
 
   test("legacy broker keys list names only, and new keys take no broker mode", async () => {
