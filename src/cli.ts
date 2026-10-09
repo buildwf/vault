@@ -5,22 +5,11 @@
  * Two argument forms are rejected rather than supported, both because they put
  * a credential into shell history: `--api-key <value>`, and `NAME=value` on
  * `secrets set`. Values come from hidden input, stdin, or the environment.
- * Project-secret destructive commands require `--yes`; issuance administration
- * accepts explicit action records, and member requests use browser approval.
+ * Destructive commands require `--yes`.
  *
- * `run` and `proxy` are the two commands that spawn something. Both strip
- * `VAULT_API_KEY` from the child environment, so a command given secrets cannot
- * turn around and ask the vault for the rest of them.
- *
- * `--env` is the vault environment. `--wrangler-env` is the Wrangler
- * environment whose `secrets.required` list `run`, `status`, and `push` read;
- * the two are separate namespaces and neither is inferred from the other. A
- * repository records the correspondence once in `vault.json`.
- *
- * `push` is guarded by `assertProviderPushAllowed`: while `vault.json` names
- * anything other than the vault as `authority`, provider synchronization fails
- * closed. That refusal is what keeps a replica from overwriting the system
- * that actually owns the values.
+ * `run` is the one command that spawns something. It injects every secret in
+ * the project/env and strips `VAULT_API_KEY` from the child environment, so a
+ * command given secrets cannot turn around and ask the vault for the rest.
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/cli/}
  */
@@ -29,22 +18,16 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { serveAgentMcp } from "./agent/cli.ts";
-import { runIssuanceCli } from "./issuance/cli.ts";
 import { VaultClient } from "./client.ts";
-import { resolveClientOptions, writeConfig } from "./config.ts";
+import { readVaultJson, resolveClientOptions, writeConfig } from "./config.ts";
 import { generateMasterKey } from "./crypto.ts";
 import { randomSecretValue } from "./keys.ts";
 import { readSecretValue } from "./prompt.ts";
+import { hookContext, wantsVaultNames } from "./hook.ts";
 import * as v from "valibot";
-import { collectionTargetSchema } from "./collection-contract.ts";
+import { SECRET_NAME, collectionTargetSchema } from "./collection-contract.ts";
 import { startSecretCollection, openCollectionBrowser } from "./collection.ts";
-import { proxyChildEnv, startProxy } from "./proxy.ts";
-import { loadRequiredSecretValues } from "./inject.ts";
-import { loadVaultValues, pushDestinations } from "./push.ts";
-import { loadRepoContext, resolveWranglerEnvironment } from "./repo-config.ts";
-import { collectStatus, formatStatus, statusFails } from "./status.ts";
 import type {
-  KeyMode,
   KeyType,
   Permission,
   ProcessEnvironment,
@@ -56,18 +39,10 @@ const options = {
   "api-url": { type: "string" },
   project: { type: "string" },
   env: { type: "string" },
-  "github-repo": { type: "string" },
-  "wrangler-env": { type: "string" },
   label: { type: "string" },
   type: { type: "string" },
   permission: { type: "string" },
-  mode: { type: "string" },
   kind: { type: "string" },
-  preset: { type: "string" },
-  host: { type: "string" },
-  header: { type: "string" },
-  "dummy-env": { type: "string" },
-  "dummy-value": { type: "string" },
   cursor: { type: "string" },
   scope: { type: "string", multiple: true },
   "expires-in-days": { type: "string" },
@@ -84,9 +59,9 @@ type Flags = ReturnType<typeof parseArgv>["flags"];
 
 /**
  * The first argument is the command unless it starts with `-`. Known options
- * may appear anywhere before `--`; everything else (positionals and unknown
- * options, verbatim) lands in `rest` for the subcommand, and `--` replaces
- * `rest` with the arguments after it.
+ * may appear anywhere before `--`; an unknown option is an error. Positionals
+ * and `-h`/`--help` land in `rest` for the subcommand, and `--` replaces `rest`
+ * with the arguments after it.
  */
 export function parseArgv(argv: string[]) {
   const first = argv[0];
@@ -111,6 +86,10 @@ export function parseArgv(argv: string[]) {
       throw new Error("--api-key is not accepted; use VAULT_API_KEY or hidden input");
     }
     const type = token.kind === "option" ? optionTypes.get(token.name) : undefined;
+    // A silently ignored flag (a typo, or a retired one like `--mode broker`)
+    // would run the command with a meaning the caller did not ask for.
+    if (token.kind === "option" && type == null && token.name !== "help" && token.name !== "h")
+      throw new Error(`unknown option ${token.rawName}`);
     if (token.kind === "option" && type != null) {
       const value = token.value;
       if (token.name === "expires-in-days" || token.name === "limit") {
@@ -141,18 +120,10 @@ export function parseArgv(argv: string[]) {
       apiUrl: text("api-url"),
       project: text("project"),
       env: text("env"),
-      githubRepo: text("github-repo"),
-      wranglerEnv: text("wrangler-env"),
       label: text("label"),
       type: text("type"),
       permission: text("permission"),
-      mode: text("mode"),
       kind: text("kind"),
-      preset: text("preset"),
-      host: text("host"),
-      header: text("header"),
-      dummyEnvName: text("dummy-env"),
-      dummyValue: text("dummy-value"),
       cursor: text("cursor"),
       scopes: seen.get("scope") ?? [],
       expiresInDays: integer("expires-in-days"),
@@ -165,29 +136,18 @@ export function parseArgv(argv: string[]) {
   };
 }
 
-function session(flags: Flags, cwd = process.cwd()) {
-  const repo = loadRepoContext(cwd);
+function session(flags: Flags) {
+  const repo = readVaultJson(process.cwd());
   // Precedence: flag, vault.json, VAULT_PROJECT/VAULT_ENV, stored config, default.
   const resolved = resolveClientOptions({
     apiUrl: flags.apiUrl,
-    project: flags.project ?? repo.vault.project,
-    env: flags.env ?? repo.vault.env,
+    project: flags.project ?? repo.project,
+    env: flags.env ?? repo.env,
   });
-  const project = resolved.project ?? "bwf";
-  const env = resolved.env ?? "dev";
   return {
-    repo,
-    cwd,
     client: new VaultClient(resolved.apiUrl, resolved.apiKey),
-    project,
-    env,
-    apiUrl: resolved.apiUrl,
-    githubRepo: flags.githubRepo ?? resolved.githubRepo,
-    // Deliberately lazy. Only the three commands that read the Wrangler
-    // contract may fail on an unselected environment; `vault secrets list`
-    // has no business caring which Worker environment exists.
-    wranglerEnvironment: () =>
-      resolveWranglerEnvironment(repo, { vaultEnv: env, wranglerEnv: flags.wranglerEnv }),
+    project: resolved.project ?? "bwf",
+    env: resolved.env ?? "dev",
   };
 }
 
@@ -242,17 +202,12 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
       case "help":
       case "-h":
       case "--help":
-        if (flags.rest[0] === "issuance") {
-          return await runIssuanceCli(["help", ...flags.rest.slice(1)], flags.apiUrl, io);
-        }
         io.log(helpText());
         return 0;
-      case "issuance":
-        return await runIssuanceCli(flags.rest, flags.apiUrl, io);
       case "mcp": {
         if (flags.rest.includes("--help") || flags.rest.includes("-h")) {
           io.log(
-            "vault mcp [--project PROJECT --env ENV]\n\nLocal MCP: describe_context, collect_secret, connect_cloudflare, request_github_access, get_task, cancel_task, read_provider. Uses the operator login; no secret values in tool inputs or receipts. Supports URL elicitation and the MCP Tasks extension. Reuse request IDs to resume. Cloudflare needs VAULT_CLOUDFLARE_OAUTH configuration; GitHub needs VAULT_GITHUB_APP. See https://vault.buildwithfriends.dev/reference/mcp/.",
+            "vault mcp [--project PROJECT --env ENV]\n\nLocal MCP: describe_context, collect_secret (in-chat prompt), use_secret (call APIs without seeing keys), share_access, open_panel (MCP Apps UI), get_task, cancel_task. Uses the operator login. Secret values are typed by the user into prompts or the panel and never returned to the model; share_access returns a new scoped key once, after approval. Supports form and URL elicitation and the MCP Tasks extension. Reuse request IDs to resume.",
           );
           return 0;
         }
@@ -262,6 +217,8 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
       }
       case "init":
         return initializeLocalVaultAt(process.cwd(), io);
+      case "hook":
+        return await runHook(flags, io);
       case "login": {
         const apiUrl = flags.apiUrl ?? flags.rest[0] ?? process.env.VAULT_API_URL;
         if (apiUrl == null) throw new Error("usage: vault login --api-url URL");
@@ -271,13 +228,12 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
           process.stdout,
           "API key: ",
         );
-        const repo = loadRepoContext(process.cwd());
+        const repo = readVaultJson(process.cwd());
         writeConfig({
           apiUrl,
           apiKey,
-          project: flags.project ?? repo.vault.project,
-          env: flags.env ?? repo.vault.env,
-          githubRepo: flags.githubRepo,
+          project: flags.project ?? repo.project,
+          env: flags.env ?? repo.env,
         });
         io.log("saved credentials to ~/.config/poc-vault/config.json (mode 0600)");
         return 0;
@@ -302,28 +258,15 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
           expiresInDays: flags.expiresInDays ?? 90,
         });
         await temporaryClient.revokeKey(temporary.prefix);
-        const repo = loadRepoContext(process.cwd());
+        const repo = readVaultJson(process.cwd());
         writeConfig({
           apiUrl,
           apiKey: durable.key,
-          project: flags.project ?? repo.vault.project,
-          env: flags.env ?? repo.vault.env,
-          githubRepo: flags.githubRepo,
+          project: flags.project ?? repo.project,
+          env: flags.env ?? repo.env,
         });
         io.log(`bootstrapped; saved operator key ${durable.prefix} (mode 0600)`);
         return 0;
-      }
-      case "status": {
-        const { client, repo, project, env, wranglerEnvironment } = session(flags);
-        const report = await collectStatus({
-          client,
-          repo,
-          wrangler: wranglerEnvironment(),
-          project,
-          env,
-        });
-        io.log(formatStatus(report).trimEnd());
-        return statusFails(report) ? 1 : 0;
       }
       case "projects":
         return await runProjects(flags, io);
@@ -344,8 +287,6 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
         return await runSecrets(flags, io);
       case "keys":
         return await runKeys(flags, io);
-      case "routes":
-        return await runRoutes(flags, io);
       case "audit": {
         const page = await session(flags).client.listAudit(
           flags.limit ?? 50,
@@ -357,60 +298,16 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
       }
       case "master-keys":
         return await runMasterKeys(flags, io);
-      case "push": {
-        const { client, repo, project, env, githubRepo, wranglerEnvironment } =
-          session(flags);
-        assertProviderPushAllowed(repo.vault.authority);
-        const values = await loadVaultValues(client, project, env);
-        const githubEnv = repo.vault.github?.env;
-        const githubValues =
-          githubEnv != null && githubEnv !== env
-            ? await loadVaultValues(client, project, githubEnv)
-            : values;
-        const report = await pushDestinations({
-          repo,
-          wrangler: wranglerEnvironment(),
-          values,
-          githubValues,
-          githubRepo,
-        });
-        for (const name of report.cloudflare) io.log(`cloudflare: ${name}`);
-        for (const name of report.retired) io.log(`cloudflare: ${name} (retired)`);
-        for (const name of report.github) io.log(`github: ${name}`);
-        for (const skip of report.skipped) io.log(`skipped ${skip}`);
-        if (
-          report.cloudflare.length +
-            report.retired.length +
-            report.github.length +
-            report.skipped.length ===
-          0
-        ) {
-          io.log("nothing to push");
-        }
-        return 0;
-      }
       // `return await`, not `return`: a promise returned out of a `try` is not
-      // caught by its `catch`, and these two are the commands that now refuse
-      // an unresolved Wrangler environment. Without the await that refusal
-      // reached the operator as an unhandled rejection and a stack trace.
+      // caught by its `catch`.
       case "run":
-        return await runInjected(flags);
-      case "proxy":
-        return await runProxied(flags);
+        return await runInjected(flags, io);
       default:
         throw new Error(`unknown command: ${command}`);
     }
   } catch (error) {
     io.error(error instanceof Error ? error.message : String(error));
     return 1;
-  }
-}
-
-export function assertProviderPushAllowed(authority: string | undefined): void {
-  if (authority != null && authority !== "vault") {
-    throw new Error(
-      `provider push is disabled while vault.json names another authority (${authority})`,
-    );
   }
 }
 
@@ -583,6 +480,9 @@ async function runSecrets(flags: Flags, io: { log: (value: string) => void }) {
       "secret",
       "--kind",
     );
+    // Checked before the value prompt, so nobody types a secret the vault refuses.
+    if (!SECRET_NAME.test(name))
+      throw new Error("secret names are env var names: letters, digits, and _ (not starting with a digit)");
     await ensureProjectAndEnvironment(client, project, env);
     if (flags.random) {
       await client.patchSecrets(project, env, { set: [{ name, kind, random: true }] });
@@ -618,17 +518,13 @@ async function runKeys(flags: Flags, io: { log: (value: string) => void }) {
       type === "user" ? "full" : "read",
       "--permission",
     );
-    const mode = enumValue<KeyMode>(flags.mode, ["inject", "broker"], "inject", "--mode");
     const keyOptions: Parameters<typeof client.createKey>[0] = {
       type,
       label: flags.label,
       permission,
       expiresInDays: flags.expiresInDays,
     };
-    if (type === "system") {
-      keyOptions.mode = mode;
-      keyOptions.scopes = parseScopes(flags.scopes);
-    }
+    if (type === "system") keyOptions.scopes = parseScopes(flags.scopes);
     const created = await client.createKey(keyOptions);
     io.log(`key ${created.prefix} (shown once): ${created.key}`);
     return 0;
@@ -647,31 +543,6 @@ async function runKeys(flags: Flags, io: { log: (value: string) => void }) {
     return 0;
   }
   throw new Error(`unknown keys command: ${sub}`);
-}
-
-async function runRoutes(flags: Flags, io: { log: (value: string) => void }) {
-  const sub = flags.rest[0] ?? "list";
-  const { client, project, env } = session(flags);
-  if (sub === "list") {
-    const routeList = await client.listRoutes(project, env);
-    for (const route of routeList.routes) io.log(JSON.stringify(route));
-    return 0;
-  }
-  if (sub === "put") {
-    const secret = flags.rest[1];
-    if (secret == null) throw new Error("usage: vault routes put SECRET [options]");
-    const route = await client.putRoute(project, env, {
-      secret,
-      preset: flags.preset,
-      host: flags.host,
-      header: flags.header,
-      dummyEnvName: flags.dummyEnvName,
-      dummyValue: flags.dummyValue,
-    });
-    io.log(route.host);
-    return 0;
-  }
-  throw new Error(`unknown routes command: ${sub}`);
 }
 
 async function runMasterKeys(flags: Flags, io: { log: (value: string) => void }) {
@@ -700,42 +571,70 @@ async function runMasterKeys(flags: Flags, io: { log: (value: string) => void })
   throw new Error(`unknown master-keys command: ${sub}`);
 }
 
-async function runInjected(flags: Flags): Promise<number> {
-  const { client, cwd, project, env } = session(flags);
-  if (flags.rest.length === 0) throw new Error("usage: vault run -- CMD");
-  // One resolver for `vault run` and the Vite plugin. Two of them drifted once
-  // already: only this one rejected an empty value.
-  const injected = await loadRequiredSecretValues({
-    cwd,
-    client,
-    project,
-    env,
-    wranglerEnv: flags.wranglerEnv,
-  });
-  return spawnCommand(flags.rest, {
-    ...process.env,
-    ...injected,
-    VAULT_API_KEY: undefined,
-  });
+// Anyone with a shared readwrite key can name a secret. These names would let
+// that value run code as whoever calls `vault run`, so they are never injected.
+// ponytail: denylist of known loader/exec variables; an allowlist of names in
+// vault.json is the upgrade if shared write keys go to less trusted holders.
+const UNSAFE_ENV_NAME =
+  /^(PATH|HOME|SHELL|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|NODE_OPTIONS|NODE_PATH|NODE_TLS_REJECT_UNAUTHORIZED|NODE_EXTRA_CA_CERTS|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PERL5OPT|PERL5LIB|PERL5DB|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GOFLAGS|SSL_CERT_FILE|SSL_CERT_DIR|(HTTP|HTTPS|ALL|NO)_PROXY|(LD|DYLD|GIT|NPM_CONFIG|VAULT)_.*)$/iu;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+
+/** The secrets safe to place in a child environment, and the names skipped. */
+export function injectableEnv(secrets: { name: string; value: string }[]) {
+  const values: Record<string, string> = {};
+  const skipped: string[] = [];
+  for (const { name, value } of secrets) {
+    if (ENV_NAME.test(name) && !UNSAFE_ENV_NAME.test(name)) values[name] = value;
+    else skipped.push(name);
+  }
+  return { values, skipped };
 }
 
-async function runProxied(flags: Flags): Promise<number> {
-  const { client, project, env } = session(flags);
-  if (flags.rest.length === 0) throw new Error("usage: vault proxy -- CMD");
-  const listed = await client.exportSecrets(project, env);
-  const secrets = listed.secrets.map((secret) => ({
-    name: secret.name,
-    kind: secret.kind,
-    value: secret.value ?? "",
-  }));
-  const routeList = await client.listRoutes(project, env);
-  const routes = routeList.routes;
-  const handle = await startProxy({ secrets, routes });
+/** Claude Code hook: JSON event on stdin, context JSON on stdout. Never fails. */
+async function runHook(flags: Flags, io: { log: (value: string) => void }) {
   try {
-    return await spawnCommand(flags.rest, proxyChildEnv(handle, process.env));
-  } finally {
-    await handle.stop();
+    const input = JSON.parse(await Bun.stdin.text());
+    let names: string[] | null = null;
+    // Most Bash calls report nothing; only ask the vault when there is something to say.
+    if (wantsVaultNames(input)) {
+      try {
+        const { client, project, env } = session(flags);
+        const meta = await Promise.race([
+          client.listSecretMeta(project, env),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
+        ]);
+        names = meta.secrets.map((secret) => secret.name);
+      } catch {
+        // Not logged in or offline: still point at missing names, without vault state.
+      }
+    }
+    const context = hookContext(input, names);
+    if (context != null)
+      io.log(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: input.hook_event_name, additionalContext: context },
+        }),
+      );
+  } catch {
+    // A hook must never break the session.
   }
+  return 0;
+}
+
+async function runInjected(
+  flags: Flags,
+  io: { error: (value: string) => void },
+): Promise<number> {
+  const { client, project, env } = session(flags);
+  if (flags.rest.length === 0) throw new Error("usage: vault run -- CMD");
+  const { values, skipped } = injectableEnv((await client.exportSecrets(project, env)).secrets);
+  for (const name of skipped)
+    io.error(
+      ENV_NAME.test(name)
+        ? `vault run: not injecting ${name}`
+        : "vault run: not injecting a secret whose name is not an env var name",
+    );
+  return spawnCommand(flags.rest, { ...process.env, ...values, VAULT_API_KEY: undefined });
 }
 
 /** The child's exit code; 1 when it cannot start or is killed by a signal. */
@@ -754,28 +653,19 @@ function helpText(): string {
 
   vault bootstrap --api-url URL [--label LABEL] [--expires-in-days 90]
   vault login --api-url URL                 # hidden API-key prompt
-  vault status
-  vault mcp                                # local secret prompts and provider access
+  vault mcp                                # agent tools: list names, collect secrets
   vault projects list|create NAME|delete NAME --yes
   vault environments list|create NAME|delete NAME --yes
   vault secrets list|get NAME|set NAME [--kind config|secret|sealed] [--random]
   vault secrets delete NAME --yes
   vault secrets collect NAME [--kind secret|sealed] # browser entry; create only
   vault keys list [--include-revoked]
-  vault keys create --type system --scope PROJECT/ENV [--mode inject|broker]
+  vault keys create --type system --scope PROJECT/ENV [--permission read|readwrite|full]
   vault keys rotate PREFIX | revoke PREFIX --yes
-  vault routes list | put SECRET --preset NAME
   vault audit [--limit N] [--cursor CURSOR]
   vault master-keys status|prepare|retire FINGERPRINT --yes
-  vault run [--wrangler-env NAME] -- CMD    # injects only secrets.required
-  vault proxy -- CMD
-  vault push                               # explicit provider synchronization
-  vault issuance setup                     # guided identity and member setup
-  vault issuance connect cloudflare         # discover and register a Cloudflare token
-  vault issuance login --api-url URL       # GitHub member login and tenant selection
-  vault issuance mcp                       # AI provisioning and scoped-token tools
-  vault issuance admin | inspect REQUEST_ID | logout
-  vault issuance [COMMAND] --help          # setup, approval flow, and tool reference
+  vault run -- CMD                          # injects every secret in project/env
+  vault hook                               # Claude Code hook (see plugin/)
   vault init                               # local development only
 
 Agents: when a user-supplied secret is missing, run secrets collect yourself on
@@ -784,12 +674,10 @@ Do not ask for the value in chat or hand the user a command. Inspect names first
 continue only after stored. Cancelled/expired stops; unknown requires inspection.
 See vault secrets collect --help. Existing interactive secrets set stays available.
 
+Share access with a scoped system key: vault keys create --type system --scope P/E.
+
 Secret values and login/bootstrap credentials are read from hidden input or stdin.
 VAULT_API_URL, VAULT_API_KEY, and VAULT_BOOTSTRAP_TOKEN are supported environment inputs.
-
-Shared issuers can provision Cloudflare services or create tokens after browser
-approval. AI uses Vault references; provider values stay in Vault. Project-secret
-commands use operator/system keys; issuance uses a separate tenant member session.
 
 Documentation: https://vault.buildwithfriends.dev/reference/cli/`;
 }

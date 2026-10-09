@@ -12,7 +12,6 @@ export function buildCollectionAssets() {
         process.execPath,
         "build",
         import.meta.dir + "/index.html",
-        import.meta.dir + "/approval.ts",
         "--target=browser",
         "--minify",
         "--outdir",

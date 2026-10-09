@@ -4,3 +4,6 @@ node_modules/
 .env*
 *.bun-build
 .DS_Store
+.cloudflare/
+dist/
+!.env.example

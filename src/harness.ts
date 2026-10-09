@@ -20,9 +20,7 @@ const migrationSql = readdirSync(migrationDirectory)
   .map((name) => readFileSync(join(migrationDirectory, name), "utf8"))
   .join("\n");
 
-export async function createTestVault(
-  options: { issuanceFetch?: typeof fetch; now?: () => number } = {},
-): Promise<{
+export async function createTestVault(): Promise<{
   env: TestEnv;
   crypto: VaultCrypto;
   store: VaultStore;
@@ -39,7 +37,6 @@ export async function createTestVault(
     app: createApp(keyring, {
       bootstrapToken: TEST_BOOTSTRAP_TOKEN,
       inactiveMasterKey: generateMasterKey(),
-      ...options,
     }),
     masterKey,
   };

@@ -6,50 +6,38 @@
   "bin": {
     "vault": "src/cli.ts"
   },
-  "exports": {
-    "./vite": "./src/vite.ts"
-  },
   "scripts": {
     "build:cli": "bun scripts/build-cli.ts",
     "cli": "bun src/cli.ts",
-    "dev": "wrangler dev --local",
-    "deploy": "wrangler deploy --env production",
-    "deploy:dry-run": "wrangler deploy --env production --dry-run --outdir=.wrangler/deploy-dry-run",
+    "dev": "cf dev",
+    "deploy": "cf deploy --mode production",
+    "deploy:dry-run": "cf deploy --mode production --dry-run",
     "install:cli": "bun run build:cli && bun scripts/install-cli.ts",
-    "migrations:local": "wrangler d1 migrations apply DB --local",
-    "migrations:production": "wrangler d1 migrations apply DB --remote --env production",
-    "canary:oauth": "bun scripts/canary-oauth.ts",
-    "canary:posthog": "bun scripts/canary-posthog.ts",
-    "verify:providers": "bun scripts/verify-providers.ts",
+    "migrations:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000d1d1 --local --persist-to .wrangler/state",
+    "migrations:production": "cf d1 migrations apply $VAULT_D1_ID",
     "recovery:rehearse": "bun scripts/recovery-rehearsal.ts",
     "master-keys:prepare-rotation": "bun scripts/rotate-master-key.ts prepare --yes",
     "acceptance": "bun scripts/acceptance.ts",
-    "acceptance:agent": "bun scripts/agent-acceptance.ts",
     "acceptance:collection": "bun scripts/collection-acceptance.ts",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
+    "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
     "test": "bun test src",
-    "types": "wrangler types --env production --env-interface Env && (cd ../.. && bunx oxfmt poc/vault/worker-configuration.d.ts)",
-    "types:check": "bun run types && git diff --exit-code -- worker-configuration.d.ts",
-    "uninstall:cli": "bun scripts/uninstall-cli.ts",
-    "acceptance:issuance": "bun scripts/issuance-acceptance.ts"
+    "types": "cf workers types",
+    "uninstall:cli": "bun scripts/uninstall-cli.ts"
   },
   "dependencies": {
-    "@clack/prompts": "latest",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/ext-apps": "2.0.3",
     "@modelcontextprotocol/server": "latest",
-    "aws4fetch": "latest",
     "hono": "latest",
-    "libsodium-wrappers": "latest",
-    "node-forge": "latest",
     "valibot": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node": "ts6.0",
-    "@types/node-forge": "latest",
+    "cf": "1.0.0-beta.10",
     "playwright": "latest",
     "typescript": "latest",
-    "vite": "latest",
     "wrangler": "latest"
   }
 }

@@ -1,13 +1,13 @@
 /**
  * `VaultClient` — the typed HTTP client for the vault API.
  *
- * Shared by the CLI and the Vite plugin so both speak one wire contract. It
+ * Used by the CLI, the agent MCP server, and the operator scripts. It
  * holds an API key for the lifetime of a command and never persists one;
  * writing credentials to disk belongs to `config.ts` alone.
  *
- * `exportSecrets` is the call behind `vault run` and `vault push`: it asks for
- * every non-sealed value at once rather than issuing one request per name, so
- * an injected process makes a single round trip.
+ * `exportSecrets` is the call behind `vault run`: it asks for every value at
+ * once rather than issuing one request per name, so an injected process makes
+ * a single round trip.
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/http-api/}
  */
@@ -16,18 +16,10 @@ import {
   apiKeyMetaSchema,
   auditRecordSchema,
   masterKeyWrapMetaSchema,
-  routeRecordSchema,
   secretMetaSchema,
   secretRecordSchema,
 } from "./client-schemas.ts";
-import type {
-  KeyMode,
-  KeyType,
-  Permission,
-  routeInputSchema,
-  Scope,
-  SecretKind,
-} from "./types.ts";
+import type { KeyType, Permission, Scope, SecretKind } from "./types.ts";
 import { collectedSecretSchema, type CollectionTarget } from "./collection-contract.ts";
 
 const keyResponseSchema = v.looseObject({ key: v.string(), prefix: v.string() });
@@ -239,30 +231,13 @@ export class VaultClient {
     );
   }
 
-  listRoutes(project: string, env: string) {
-    return this.request(
-      "GET",
-      `${this.envPath(project, env)}/routes`,
-      v.looseObject({ routes: v.array(routeRecordSchema) }),
-    );
-  }
-
-  putRoute(project: string, env: string, body: v.InferInput<typeof routeInputSchema>) {
-    return this.request(
-      "PUT",
-      `${this.envPath(project, env)}/routes`,
-      v.looseObject({ ok: v.literal(true), host: v.string() }),
-      { body },
-    );
-  }
-
   createKey(body: {
     type: KeyType;
     label?: string;
     permission?: Permission;
-    mode?: KeyMode;
     scopes?: Scope[];
     expiresInDays?: number;
+    expiresInMinutes?: number;
   }) {
     return this.request("POST", "/v1/keys", keyResponseSchema, { body });
   }

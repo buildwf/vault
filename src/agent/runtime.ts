@@ -1,18 +1,18 @@
-import * as v from "valibot";
 import { VaultClient } from "../client.ts";
-import { startSecretCollection } from "../collection.ts";
-import { AgentTasks } from "./tasks.ts";
-import { cloudflareHandoff, githubHandoff } from "./handoff.ts";
+import { settle, startSecretCollection } from "../collection.ts";
+import { SECRET_NAME } from "../collection-contract.ts";
 import {
-  cloudflareConfigSchema,
-  cloudflareAccessSchema,
-  githubAccess,
-  githubAccessSchema,
-  providerJson,
-} from "./provider.ts";
+  brokeredFetch,
+  placeholderNames,
+  requestHost,
+  type BrokeredRequest,
+} from "./broker.ts";
+import { AgentTasks } from "./tasks.ts";
 
 export class AgentRuntime {
   private closing = false;
+  // ponytail: in-memory grants, lost on restart (the user just approves again).
+  private readonly grants = new Map<string, number>();
   private readonly active = new Map<
     string,
     { stop: () => Promise<void>; timer: ReturnType<typeof setTimeout> }
@@ -22,7 +22,6 @@ export class AgentRuntime {
     readonly project: string,
     readonly env: string,
     readonly tasks: AgentTasks,
-    private readonly send: typeof fetch = fetch,
   ) {}
   private target(name: string) {
     return { project: this.project, env: this.env, name, kind: "secret" as const };
@@ -38,15 +37,90 @@ export class AgentRuntime {
   }
   async context() {
     const meta = await this.client.listSecretMeta(this.project, this.env);
-    const names = new Set(meta.secrets.map((secret) => secret.name));
     return {
       project: this.project,
       env: this.env,
-      secrets: meta.secrets.map(({ name, kind }) => ({ name, kind })),
-      cloudflareConfigured: names.has("VAULT_CLOUDFLARE_OAUTH"),
-      githubConfigured: names.has("VAULT_GITHUB_APP"),
+      // Older rows may predate the name rule; never echo them into agent context.
+      secrets: meta.secrets
+        .filter(({ name }) => SECRET_NAME.test(name))
+        .map(({ name, kind }) => ({ name, kind })),
       message:
-        "Collect missing values through collect_secret. Provider configuration stays in Vault. Provider access is referenced by task ID, never returned as a token.",
+        "Collect missing values through collect_secret. Call APIs with use_secret and {{NAME}} placeholders so keys never reach you, or run commands with `vault run -- CMD`.",
+    };
+  }
+  /** Saves a value the user typed into an in-chat prompt for a waiting collection. */
+  async store(taskId: string, value: string) {
+    const task = this.tasks.get(taskId);
+    if (!this.tasks.claim(task.taskId)) return this.tasks.get(task.taskId);
+    // Detach the unused browser form first so its receipt cannot overwrite this one.
+    const active = this.active.get(task.taskId);
+    this.active.delete(task.taskId);
+    if (active) clearTimeout(active.timer);
+    const state = await settle(() =>
+      this.client.createCollectedSecret(this.target(task.target), value),
+    );
+    const done = this.tasks.transition(task.taskId, "saving", state);
+    await active?.stop();
+    return done;
+  }
+  /** Creates a missing secret from a value typed into the panel. Never replaces one. */
+  add(name: string, value: string) {
+    return settle(() => this.client.createCollectedSecret(this.target(name), value));
+  }
+  /** The host and the names in `request` the user has not allowed for that host. */
+  ungranted(request: BrokeredRequest) {
+    const host = requestHost(request);
+    const now = Date.now();
+    return {
+      host,
+      names: placeholderNames(request).filter(
+        (name) => (this.grants.get(`${name} ${host}`) ?? 0) <= now,
+      ),
+    };
+  }
+  grant(names: string[], host: string, minutes = 15) {
+    for (const name of names) this.grants.set(`${name} ${host}`, Date.now() + minutes * 60000);
+  }
+  /** Active grants as `{ name, host, expiresAt }`. */
+  activeGrants() {
+    const now = Date.now();
+    return [...this.grants]
+      .filter(([, expiresAt]) => expiresAt > now)
+      .map(([key, expiresAt]) => {
+        const [name, host] = key.split(" ");
+        return { name: name!, host: host!, expiresAt: new Date(expiresAt).toISOString() };
+      });
+  }
+  revokeGrant(name: string, host: string) {
+    this.grants.delete(`${name} ${host}`);
+  }
+  async useSecret(request: BrokeredRequest) {
+    const names = placeholderNames(request);
+    if (names.length === 0) throw new Error("use_secret needs at least one {{NAME}} placeholder");
+    if (this.ungranted(request).names.length > 0) throw new Error("use_secret is not approved");
+    const { secrets } = await this.client.exportSecrets(this.project, this.env);
+    const values = Object.fromEntries(
+      secrets.filter((secret) => names.includes(secret.name)).map((s) => [s.name, s.value]),
+    );
+    const missing = names.filter((name) => !(name in values));
+    if (missing.length > 0)
+      return { missing, message: "Ask the user for these with collect_secret, then retry." };
+    return brokeredFetch(request, values);
+  }
+  /** A short-lived key scoped to this project/env, for another agent or person. */
+  async share(permission: "read" | "readwrite", minutes: number, label?: string) {
+    const created = await this.client.createKey({
+      type: "system",
+      permission,
+      label: label ?? "agent handoff",
+      scopes: [{ project: this.project, env: this.env }],
+      expiresInMinutes: minutes,
+    });
+    return {
+      prefix: created.prefix,
+      expiresInMinutes: minutes,
+      env: { VAULT_API_URL: this.client.apiUrl, VAULT_API_KEY: created.key },
+      usage: `VAULT_API_URL=${this.client.apiUrl} VAULT_API_KEY=${created.key} vault run --project ${this.project} --env ${this.env} -- CMD`,
     };
   }
   async collect(taskId: string, name: string) {
@@ -67,7 +141,8 @@ export class AgentRuntime {
       });
       this.hold(taskId, helper);
       void helper.completed.then((receipt) => {
-        if (this.closing) return;
+        // A missing entry means an in-chat answer (or cancel) took this task over.
+        if (this.closing || !this.active.has(taskId)) return;
         const current = this.tasks.get(taskId);
         if (current.state === "waiting" || current.state === "saving")
           this.tasks.transition(taskId, current.state, receipt.state);
@@ -76,122 +151,6 @@ export class AgentRuntime {
     } catch {
       return this.tasks.transition(taskId, "waiting", "unknown");
     }
-  }
-  async connectCloudflare(taskId: string) {
-    const name = `CF_CONNECTION_${taskId.replaceAll("-", "_")}`;
-    const { created, task } = this.tasks.create(taskId, "cloudflare", name);
-    if (!created && !this.tasks.reclaim(task.taskId)) return task;
-    taskId = task.taskId;
-    try {
-      const config = v.parse(
-        cloudflareConfigSchema,
-        JSON.parse(
-          (await this.client.getSecret(this.project, this.env, "VAULT_CLOUDFLARE_OAUTH"))
-            .value,
-        ),
-      );
-      const handle = cloudflareHandoff({
-        tasks: this.tasks,
-        taskId,
-        config,
-        send: this.send,
-        save: (value) => this.client.createCollectedSecret(this.target(name), value),
-      });
-      this.hold(taskId, handle);
-      return this.tasks.get(taskId);
-    } catch {
-      return this.tasks.transition(taskId, "waiting", "unknown");
-    }
-  }
-  async requestGithub(taskId: string, repository: string) {
-    const { created, task } = this.tasks.create(taskId, "github", repository);
-    if (!created && !this.tasks.reclaim(task.taskId)) return task;
-    taskId = task.taskId;
-    try {
-      // Check only metadata before asking for consent; the key stays in the trusted host.
-      const meta = await this.client.listSecretMeta(this.project, this.env);
-      if (!meta.secrets.some((secret) => secret.name === "VAULT_GITHUB_APP"))
-        throw new Error("GitHub App is not configured");
-      const handle = githubHandoff({
-        tasks: this.tasks,
-        taskId,
-        repository,
-        save: async () => {
-          const config = (
-            await this.client.getSecret(this.project, this.env, "VAULT_GITHUB_APP")
-          ).value;
-          const access = await githubAccess(config, repository, this.send);
-          await this.client.createCollectedSecret(
-            this.target(`GH_ACCESS_${taskId.replaceAll("-", "_")}`),
-            JSON.stringify(access),
-          );
-        },
-      });
-      this.hold(taskId, handle);
-      return this.tasks.get(taskId);
-    } catch {
-      return this.tasks.transition(taskId, "waiting", "unknown");
-    }
-  }
-  async readProvider(taskId: string, path: string) {
-    const task = this.tasks.get(taskId);
-    taskId = task.taskId;
-    if (task.state !== "stored") throw new Error("Provider access is not ready");
-    let token: string;
-    let origin: string;
-    if (task.kind === "github") {
-      if (path !== `/repos/${task.target}` && !path.startsWith(`/repos/${task.target}/`))
-        throw new Error("Path is outside the approved repository");
-      const access = v.parse(
-        githubAccessSchema,
-        JSON.parse(
-          (
-            await this.client.getSecret(
-              this.project,
-              this.env,
-              `GH_ACCESS_${taskId.replaceAll("-", "_")}`,
-            )
-          ).value,
-        ),
-      );
-      if (access.repository !== task.target || access.expiresAt <= Date.now())
-        throw new Error("GitHub access expired; request new access");
-      token = access.token;
-      origin = "https://api.github.com";
-    } else if (task.kind === "cloudflare") {
-      if (!/^\/client\/v4\/(accounts|zones)(?:\/|$)/u.test(path))
-        throw new Error("Use a Cloudflare accounts or zones API path");
-      const access = v.parse(
-        cloudflareAccessSchema,
-        JSON.parse(
-          (await this.client.getSecret(this.project, this.env, task.target)).value,
-        ),
-      );
-      if (access.expiresAt <= Date.now())
-        throw new Error("Cloudflare connection expired; reconnect");
-      token = access.accessToken;
-      origin = "https://api.cloudflare.com";
-    } else throw new Error("This task is not provider access");
-    if (
-      path.includes("%") ||
-      path.includes("\\") ||
-      path.split(/[/?]/u).some((part) => part === "." || part === "..") ||
-      path.includes("#")
-    )
-      throw new Error("Invalid provider path");
-    const response = await this.send(origin + path, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "User-Agent": "Vault",
-        "X-GitHub-Api-Version": "2026-03-10",
-      },
-      redirect: "error",
-      signal: AbortSignal.timeout(30000),
-    });
-    const body = await providerJson(response);
-    // The trusted proxy never reflects its injected bearer, including upstream echoes.
-    return JSON.parse(JSON.stringify(body).replaceAll(token, "[redacted]"));
   }
   async cancel(taskId: string) {
     const current = this.tasks.get(taskId);
@@ -209,9 +168,7 @@ export class AgentRuntime {
   async resume(taskId: string) {
     const task = this.tasks.get(taskId);
     if (task.state !== "waiting" || task.url) return task;
-    if (task.kind === "collection") return this.collect(task.requestId, task.target);
-    if (task.kind === "github") return this.requestGithub(task.requestId, task.target);
-    return this.connectCloudflare(task.requestId);
+    return this.collect(task.requestId, task.target);
   }
   async close() {
     this.closing = true;

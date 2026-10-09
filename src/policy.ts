@@ -2,17 +2,14 @@
  * The single place a key's authority is decided.
  *
  * Two key types: `user` keys are operators (manage keys, projects, and audit;
- * unscoped) and `system` keys are machines (scoped, and never able to manage
- * anything). A system key's `mode` splits it further — `inject` may decrypt
- * values within its scopes, `broker` may not decrypt anything at all.
+ * unscoped) and `system` keys are shared with people and agents (scoped, and
+ * never able to manage anything). Legacy `broker`-mode keys are names-only:
+ * they may list secret names (what CI gates such as "merge-gate secret
+ * status" use) but never read values or write.
  *
- * `broker` is what makes `vault proxy` meaningful: it can list names, list
- * routes, and create sealed random secrets, so a process can mint and use a
- * credential it is never permitted to read.
- *
- * The `sealed` kind is checked here rather than at a call site: no key type,
- * permission, or query parameter returns a sealed value, which is what makes
- * "write-only" a property of the system instead of a convention.
+ * The `sealed` kind is checked here rather than at a call site: `get` and
+ * `?show=1` never return a sealed value; only the `?export=1` path that
+ * `vault run` uses does.
  *
  * Keep these decisions in this module. A policy check inlined into a route is
  * a rule that the next route silently does not get.
@@ -42,12 +39,8 @@ export function isOperator(key: ApiKeyRecord): boolean {
 }
 
 function canWriteSecrets(key: ApiKeyRecord): boolean {
+  if (key.mode === "broker") return false;
   return key.permission === "full" || key.permission === "readwrite";
-}
-
-export function canDecryptValues(key: ApiKeyRecord): boolean {
-  if (key.type === "user") return true;
-  return key.mode === "inject";
 }
 
 export function assertActiveKey(key: ApiKeyRecord, now: Date = new Date()): void {
@@ -67,21 +60,15 @@ export function assertScope(key: ApiKeyRecord, project: string, env: string): vo
     throw new PolicyError(403, "API key is not scoped to this project/environment");
 }
 
-export function assertCanDecrypt(key: ApiKeyRecord): void {
-  if (!canDecryptValues(key)) {
-    throw new PolicyError(403, "broker keys cannot read secret values");
-  }
+/** Names-only (broker) keys never see a value, on any read path. */
+export function assertCanReadValues(key: ApiKeyRecord): void {
+  if (key.mode === "broker") throw new PolicyError(403, "this key can list names only");
 }
 
 export function assertCanWrite(key: ApiKeyRecord): void {
   if (!canWriteSecrets(key)) throw new PolicyError(403, "API key cannot write secrets");
 }
 
-export function valueVisibleOnGet(key: ApiKeyRecord, kind: SecretKind): boolean {
-  if (kind === "sealed") return false;
-  return canDecryptValues(key);
-}
-
-export function dummyForProxy(kind: SecretKind): boolean {
-  return kind !== "config";
+export function valueVisibleOnGet(kind: SecretKind): boolean {
+  return kind !== "sealed";
 }

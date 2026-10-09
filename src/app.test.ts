@@ -2,13 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
 import { authHeaders, bootstrapUser, createTestVault } from "./harness.ts";
+import { randomApiKey } from "./keys.ts";
 
 const secretsParser = z.looseObject({
   secrets: z.array(
     z.looseObject({ name: z.string(), kind: z.string(), value: z.optional(z.string()) }),
   ),
 });
-const keyParser = z.looseObject({ key: z.string() });
 const errorParser = z.looseObject({ error: z.string() });
 
 describe("worker api", () => {
@@ -104,8 +104,8 @@ describe("worker api", () => {
     expect(auditRow!.secret_name_encrypted.includes("TOKEN")).toBe(false);
   });
 
-  test("broker system key cannot GET values", async () => {
-    const { app, env } = await createTestVault();
+  test("legacy broker keys list names only, and new keys take no broker mode", async () => {
+    const { app, env, store } = await createTestVault();
     const user = await bootstrapUser(app, env);
     await app.request(
       "/v1/projects",
@@ -121,12 +121,41 @@ describe("worker api", () => {
       {
         method: "PATCH",
         headers: authHeaders(user, "application/json"),
-        body: JSON.stringify({
-          set: [{ name: "GITHUB_TOKEN", value: "real-token", kind: "sealed" }],
-        }),
+        body: JSON.stringify({ set: [{ name: "GATE_CHECKED", value: "hidden-value" }] }),
       },
       env,
     );
+    const broker = randomApiKey("system");
+    await store.insertKey({
+      plaintext: broker.plaintext,
+      prefix: broker.prefix,
+      type: "system",
+      permission: "readwrite",
+      mode: "broker",
+      label: "legacy",
+      scopes: [{ project: "demo", env: "dev" }],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const base = "/v1/projects/demo/environments/dev/secrets";
+    const as = (init: RequestInit = {}) => ({
+      ...init,
+      headers: authHeaders(broker.plaintext, "application/json"),
+    });
+    const listed = await app.request(base, as(), env);
+    expect(listed.status).toBe(200);
+    expect(await listed.text()).toContain("GATE_CHECKED");
+    for (const path of [`${base}?show=1`, `${base}?export=1`, `${base}/GATE_CHECKED`]) {
+      const denied = await app.request(path, as(), env);
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).not.toContain("hidden-value");
+    }
+    const write = await app.request(
+      base,
+      as({ method: "PATCH", body: JSON.stringify({ set: [{ name: "X_Y", value: "v" }] }) }),
+      env,
+    );
+    expect(write.status).toBe(403);
+
     const created = await app.request(
       "/v1/keys",
       {
@@ -135,45 +164,15 @@ describe("worker api", () => {
         body: JSON.stringify({
           type: "system",
           mode: "broker",
-          permission: "read",
           scopes: [{ project: "demo", env: "dev" }],
         }),
       },
       env,
     );
-    const broker = z.parse(keyParser, await created.json()).key;
-
-    const shown = await app.request(
-      "/v1/projects/demo/environments/dev/secrets?show=1",
-      {
-        headers: authHeaders(broker),
-      },
-      env,
-    );
-    expect(shown.status).toBe(403);
-
-    const got = await app.request(
-      "/v1/projects/demo/environments/dev/secrets/GITHUB_TOKEN",
-      {
-        headers: authHeaders(broker),
-      },
-      env,
-    );
-    expect(got.status).toBe(403);
-
-    const listed = await app.request(
-      "/v1/projects/demo/environments/dev/secrets",
-      {
-        headers: authHeaders(broker),
-      },
-      env,
-    );
-    expect(listed.status).toBe(200);
-    const listedBody = z.parse(secretsParser, await listed.json());
-    expect(listedBody.secrets[0]?.name).toBe("GITHUB_TOKEN");
+    expect(created.status).toBe(400);
   });
 
-  test("export returns sealed values for a user key, not a broker key", async () => {
+  test("export returns sealed values, get does not", async () => {
     const { app, env } = await createTestVault();
     const user = await bootstrapUser(app, env);
     await app.request(
@@ -204,6 +203,18 @@ describe("worker api", () => {
     const exportedBody = z.parse(secretsParser, await exported.json());
     expect(exportedBody.secrets[0]?.value).toBe("real-token");
 
+    const got = await app.request(
+      "/v1/projects/demo/environments/dev/secrets/GITHUB_TOKEN",
+      { headers: authHeaders(user) },
+      env,
+    );
+    expect(got.status).toBe(403);
+  });
+
+  test("handoff keys can expire in minutes", async () => {
+    const { app, env } = await createTestVault();
+    const user = await bootstrapUser(app, env);
+    const before = Date.now();
     const created = await app.request(
       "/v1/keys",
       {
@@ -211,20 +222,21 @@ describe("worker api", () => {
         headers: authHeaders(user, "application/json"),
         body: JSON.stringify({
           type: "system",
-          mode: "broker",
-          permission: "read",
           scopes: [{ project: "demo", env: "dev" }],
+          expiresInMinutes: 5,
         }),
       },
       env,
     );
-    const broker = z.parse(keyParser, await created.json()).key;
-    const denied = await app.request(
-      "/v1/projects/demo/environments/dev/secrets?export=1",
-      { headers: authHeaders(broker) },
-      env,
+    expect(created.status).toBe(201);
+    const prefix = z.parse(z.looseObject({ prefix: z.string() }), await created.json()).prefix;
+    const listed = z.parse(
+      z.looseObject({ keys: z.array(z.looseObject({ keyPrefix: z.string(), expiresAt: z.string() })) }),
+      await (await app.request("/v1/keys", { headers: authHeaders(user) }, env)).json(),
     );
-    expect(denied.status).toBe(403);
+    const expiresAt = Date.parse(listed.keys.find((key) => key.keyPrefix === prefix)!.expiresAt);
+    expect(expiresAt - before).toBeGreaterThanOrEqual(5 * 60 * 1000 - 1000);
+    expect(expiresAt - before).toBeLessThanOrEqual(5 * 60 * 1000 + 5000);
   });
 
   test("creating a duplicate project is a 409 conflict, not a 500", async () => {

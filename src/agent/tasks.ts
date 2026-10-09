@@ -7,7 +7,7 @@ const taskSchema = v.object({
   taskId: v.pipe(v.string(), v.uuid()),
   requestId: v.pipe(v.string(), v.uuid()),
   ownerPid: v.number(),
-  kind: v.picklist(["collection", "cloudflare", "github"]),
+  kind: v.literal("collection"),
   target: v.string(),
   state: v.picklist([
     "waiting",
@@ -24,7 +24,7 @@ const taskSchema = v.object({
   url: v.nullable(v.string()),
 });
 export type AgentTask = v.InferOutput<typeof taskSchema>;
-/** Only request metadata is persisted here. Provider values belong in Vault. */
+/** Only request metadata is persisted here. Values belong in Vault. */
 export class AgentTasks {
   private readonly db: Database;
   constructor(

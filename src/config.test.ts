@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { readConfigAt, writeConfigAt } from "./config.ts";
+import { readConfigAt, readVaultJson, writeConfigAt } from "./config.ts";
 
 describe("vault config", () => {
   test("writes credentials into a private directory and file", () => {
@@ -57,6 +57,24 @@ describe("vault config", () => {
       expect(readConfigAt(nullValue)).toEqual({});
       expect(readConfigAt(primitive)).toEqual({});
       expect(readConfigAt(wrongType)).toEqual({});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("readVaultJson walks up, accepts comments, and rejects wrong types", () => {
+    const root = mkdtempSync(join(tmpdir(), "vault-json-"));
+    try {
+      const nested = join(root, "a", "b");
+      mkdirSync(nested, { recursive: true });
+      expect(readVaultJson(nested)).toEqual({});
+      writeFileSync(
+        join(root, "vault.json"),
+        '{\n  // repo default\n  "project": "demo", "env": "dev"\n}\n',
+      );
+      expect(readVaultJson(nested)).toEqual({ project: "demo", env: "dev" });
+      writeFileSync(join(root, "vault.json"), '{"project": 1}');
+      expect(() => readVaultJson(nested)).toThrow("must hold string project/env");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -82,14 +82,6 @@ describe("VaultClient local HTTP integration", () => {
         value: "visible",
       });
 
-      expect(
-        await client.putRoute("demo", "staging", {
-          host: "api.example.test",
-          secret: "PUBLIC_VALUE",
-        }),
-      ).toEqual({ ok: true, host: "api.example.test" });
-      expect((await client.listRoutes("demo", "staging")).routes).toHaveLength(1);
-
       const createdKey = await client.createKey({ type: "user", label: "rotated" });
       expect(
         (await client.listKeys()).keys.some((key) => key.keyPrefix === createdKey.prefix),

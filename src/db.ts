@@ -24,7 +24,6 @@ import type {
   KeyMode,
   KeyType,
   Permission,
-  RouteRecord,
   Scope,
   SecretKind,
   SecretMeta,
@@ -58,17 +57,6 @@ type SecretRow = {
   updated_at: string;
 };
 
-type RouteRow = {
-  id: string;
-  environment_id: string;
-  host: string;
-  secret_key_hash: string;
-  inject: string;
-  strip_headers: string;
-  dummy_env_name: string;
-  dummy_value: string;
-};
-
 type AuditRow = {
   id: string;
   key_prefix: string;
@@ -78,8 +66,6 @@ type AuditRow = {
   status: string;
   created_at: string;
 };
-
-/** `mcp.ts` imports the store's error under this name. */
 
 const LAST_USER_KEY = "cannot revoke the last active user key";
 const INSERT_ENVIRONMENT =
@@ -470,70 +456,12 @@ export class VaultStore {
     return row == null ? null : this.decryptSecret(row);
   }
 
-  async upsertRoute(environmentId: string, route: RouteRecord): Promise<void> {
-    await this.db
-      .prepare(
-        `INSERT INTO routes (
-          id, environment_id, host, secret_key_hash, inject, strip_headers,
-          dummy_env_name, dummy_value
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(environment_id, host) DO UPDATE SET
-          secret_key_hash = excluded.secret_key_hash,
-          inject = excluded.inject,
-          strip_headers = excluded.strip_headers,
-          dummy_env_name = excluded.dummy_env_name,
-          dummy_value = excluded.dummy_value`,
-      )
-      .bind(
-        newId(),
-        environmentId,
-        route.host,
-        await this.vaultCrypto.lookupHash(route.secretName),
-        route.inject,
-        JSON.stringify(route.stripHeaders),
-        route.dummyEnvName,
-        route.dummyValue,
-      )
-      .run();
-  }
-
-  async listRoutes(environmentId: string): Promise<RouteRecord[]> {
-    const result = await this.db
-      .prepare("SELECT * FROM routes WHERE environment_id = ? ORDER BY host")
-      .bind(environmentId)
-      .all<RouteRow>();
-    const routes: RouteRecord[] = [];
-    const secrets = await this.listSecrets(environmentId);
-    const byHash = new Map<string, string>();
-    for (const secret of secrets) {
-      byHash.set(await this.vaultCrypto.lookupHash(secret.name), secret.name);
-    }
-    for (const row of result.results ?? []) {
-      const secretName = byHash.get(row.secret_key_hash);
-      if (secretName == null) continue;
-      routes.push({
-        host: row.host,
-        secretName,
-        inject: row.inject,
-        // SAFETY: route rows are written only from RouteRecord.stripHeaders,
-        // serialized as a JSON string array by putRoute.
-        stripHeaders: JSON.parse(row.strip_headers) as string[],
-        dummyEnvName: row.dummy_env_name,
-        dummyValue: row.dummy_value,
-      });
-    }
-    return routes;
-  }
-
   async audit(input: {
     keyPrefix: string;
     action: AuditAction;
     status: string;
-    host?: string;
     secretName?: string;
   }): Promise<void> {
-    const hostEncrypted =
-      input.host != null ? await this.vaultCrypto.encrypt(input.host) : null;
     const secretNameEncrypted =
       input.secretName != null ? await this.vaultCrypto.encrypt(input.secretName) : null;
     await this.db
@@ -547,7 +475,7 @@ export class VaultStore {
         newId(),
         input.keyPrefix,
         input.action,
-        hostEncrypted,
+        null,
         secretNameEncrypted,
         input.status,
         nowIso(),

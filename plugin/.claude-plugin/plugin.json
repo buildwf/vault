@@ -1,0 +1,16 @@
+{
+  "name": "vault",
+  "version": "0.1.0",
+  "description": "AI-first secrets: in-chat secret prompts, API calls with keys the agent never sees, scoped handoff to other agents, and automatic fixes for missing env vars. Needs the `vault` CLI on PATH and `vault login`.",
+  "author": {
+    "name": "Build With Friends"
+  },
+  "mcpServers": {
+    "vault": {
+      "command": "vault",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
