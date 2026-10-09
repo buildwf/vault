@@ -130,6 +130,20 @@ export class VaultClient {
     });
   }
 
+  listOrgs() {
+    return this.request("GET", "/v1/orgs", v.looseObject({ orgs: v.array(v.string()) }));
+  }
+
+  /** Creates an org with its first operator key, which is returned once. */
+  createOrg(name: string, options: { label?: string; expiresInDays?: number } = {}) {
+    return this.request(
+      "POST",
+      "/v1/orgs",
+      v.looseObject({ name: v.string(), key: v.string(), prefix: v.string() }),
+      { body: { name, ...options } },
+    );
+  }
+
   listProjects() {
     return this.request(
       "GET",

@@ -15,9 +15,14 @@
  * wrap (409), since removing it makes the database unreadable by the running
  * Worker.
  *
+ * Every org other than `DEFAULT_ORG` has its own data key, stored encrypted by
+ * the vault data key (`orgs.wrappedDataKey`). `cryptoFor` opens it per request,
+ * so one org's rows are ciphertext to another org's keys even if a lookup goes
+ * wrong. Root rotation re-wraps only the vault data key; org keys are untouched.
+ *
  * @see {@link https://vault.buildwithfriends.dev/operations/master-key-rotation/}
  */
-import type { VaultBackend } from "./backend.ts";
+import { DEFAULT_ORG, type VaultBackend } from "./backend.ts";
 import {
   MasterKeyError,
   VaultCrypto,
@@ -58,6 +63,25 @@ export class VaultKeyring {
       await VaultCrypto.fromWrappedDataKey(masterKey, row.wrappedDataKey),
       fingerprint,
     );
+  }
+
+  /** The org's crypto: the vault's own for `DEFAULT_ORG`, otherwise its unwrapped data key. */
+  async cryptoFor(orgId: string): Promise<VaultCrypto> {
+    if (orgId === DEFAULT_ORG) return this.crypto;
+    const org = await this.backend.getOrg({ id: orgId });
+    if (org == null) throw new MasterKeyError("org data key not found");
+    return VaultCrypto.fromDataKey(
+      Uint8Array.fromBase64(await this.crypto.decrypt(org.wrappedDataKey)),
+    );
+  }
+
+  /** A fresh org data key, and that key encrypted by the vault data key for storage. */
+  async newOrgKey(): Promise<{ crypto: VaultCrypto; wrappedDataKey: string }> {
+    const dataKey = crypto.getRandomValues(new Uint8Array(32));
+    return {
+      crypto: await VaultCrypto.fromDataKey(dataKey),
+      wrappedDataKey: await this.crypto.encrypt(dataKey.toBase64()),
+    };
   }
 
   async prepare(masterKey: string | undefined): Promise<string> {

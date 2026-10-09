@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { AuditRow, KeyRow, VaultBackend } from "./backend.ts";
+import { DEFAULT_ORG, type AuditRow, type KeyRow, type VaultBackend } from "./backend.ts";
 import { ConvexBackend } from "./backend-convex.ts";
 import { TEST_BACKEND, openTestBackend } from "./harness.ts";
 
@@ -10,6 +10,7 @@ const NOW = "2026-10-09T00:00:00.000Z";
 function userKey(prefix: string, overrides: Partial<KeyRow> = {}): KeyRow {
   return {
     id: crypto.randomUUID(),
+    orgId: DEFAULT_ORG,
     keyPrefix: prefix,
     keyHash: `hash-${prefix}`,
     type: "user",
@@ -29,6 +30,7 @@ function userKey(prefix: string, overrides: Partial<KeyRow> = {}): KeyRow {
 function auditEvent(id: string, createdAt: string): AuditRow {
   return {
     id,
+    orgId: DEFAULT_ORG,
     keyPrefix: "vault_usr_x",
     action: "list",
     hostEncrypted: null,
@@ -40,7 +42,7 @@ function auditEvent(id: string, createdAt: string): AuditRow {
 
 async function projectWithSecret(backend: VaultBackend) {
   await backend.createProject({
-    project: { id: "p1", name: "demo", createdAt: NOW },
+    project: { id: "p1", orgId: DEFAULT_ORG, name: "demo", createdAt: NOW },
     environments: [
       { id: "e1", name: "dev" },
       { id: "e2", name: "prod" },
@@ -66,14 +68,14 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     await backend.insertKey({
       key: userKey("vault_usr_old", { expiresAt: "2020-01-01T00:00:00.000Z" }),
     });
-    expect(await backend.revokeKey({ keyPrefix: "vault_usr_a", revokedAt: NOW })).toBe(
+    expect(await backend.revokeKey({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_a", revokedAt: NOW })).toBe(
       "last_user_key",
     );
     // An expired key is not what keeps the vault reachable, so it may go.
-    expect(await backend.revokeKey({ keyPrefix: "vault_usr_old", revokedAt: NOW })).toBe(
+    expect(await backend.revokeKey({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_old", revokedAt: NOW })).toBe(
       "revoked",
     );
-    expect(await backend.revokeKey({ keyPrefix: "vault_usr_old", revokedAt: NOW })).toBe(
+    expect(await backend.revokeKey({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_old", revokedAt: NOW })).toBe(
       "not_found",
     );
 
@@ -85,7 +87,7 @@ describe(`${TEST_BACKEND} backend contract`, () => {
         revokedAt: NOW,
       }),
     ).toBe("rotated");
-    expect((await backend.findKeyByPrefix({ keyPrefix: "vault_usr_a" }))?.revoked).toBe(true);
+    expect((await backend.findKeyByPrefix({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_a" }))?.revoked).toBe(true);
     // ...but not into a replacement that is already expired.
     expect(
       await backend.rotateKey({
@@ -94,8 +96,8 @@ describe(`${TEST_BACKEND} backend contract`, () => {
         revokedAt: NOW,
       }),
     ).toBe("last_user_key");
-    expect(await backend.findKeyByPrefix({ keyPrefix: "vault_usr_c" })).toBeNull();
-    expect((await backend.listKeys({ includeRevoked: false })).map((k) => k.keyPrefix)).toEqual([
+    expect(await backend.findKeyByPrefix({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_c" })).toBeNull();
+    expect((await backend.listKeys({ orgId: DEFAULT_ORG, includeRevoked: false })).map((k) => k.keyPrefix)).toEqual([
       "vault_usr_b",
     ]);
   });
@@ -105,7 +107,7 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     await projectWithSecret(backend);
     expect(
       await backend.createProject({
-        project: { id: "p2", name: "demo", createdAt: NOW },
+        project: { id: "p2", orgId: DEFAULT_ORG, name: "demo", createdAt: NOW },
         environments: [],
       }),
     ).toBe(false);
@@ -134,7 +136,7 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     ).toBe("value-ciphertext");
 
     await backend.deleteProject({ id: "p1" });
-    expect(await backend.listProjects({})).toEqual([]);
+    expect(await backend.listProjects({ orgId: DEFAULT_ORG })).toEqual([]);
     expect(await backend.getEnvironment({ projectId: "p1", name: "dev" })).toBeNull();
     expect(await backend.listSecretRows({ environmentId: "e1" })).toEqual([]);
   });
@@ -151,21 +153,23 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     ] as const)
       await backend.insertAudit({ event: auditEvent(id, createdAt) });
 
-    const first = await backend.listAudit({ limit: 2, before: null });
+    const first = await backend.listAudit({ orgId: DEFAULT_ORG, limit: 2, before: null });
     expect(first.map((row) => row.id)).toEqual(["e", "d"]);
     const second = await backend.listAudit({
+      orgId: DEFAULT_ORG,
       limit: 2,
       before: { createdAt: first[1]!.createdAt, id: first[1]!.id },
     });
     expect(second.map((row) => row.id)).toEqual(["c", "b"]);
     const third = await backend.listAudit({
+      orgId: DEFAULT_ORG,
       limit: 2,
       before: { createdAt: second[1]!.createdAt, id: second[1]!.id },
     });
     expect(third.map((row) => row.id)).toEqual(["a"]);
 
     expect(await backend.pruneAudit({ before: at(3) })).toBe(4);
-    expect((await backend.listAudit({ limit: 10, before: null })).map((row) => row.id)).toEqual([
+    expect((await backend.listAudit({ orgId: DEFAULT_ORG, limit: 10, before: null })).map((row) => row.id)).toEqual([
       "e",
     ]);
   });
@@ -179,7 +183,7 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     expect(await backend.claimBootstrap({ claimedAt: NOW, key: userKey("vault_usr_2") })).toBe(
       false,
     );
-    expect(await backend.findKeyByPrefix({ keyPrefix: "vault_usr_2" })).toBeNull();
+    expect(await backend.findKeyByPrefix({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_2" })).toBeNull();
     expect(await backend.isBootstrapped({})).toBe(true);
   });
 });
@@ -204,19 +208,19 @@ describe.if(TEST_BACKEND === "convex")("convex storage endpoint", () => {
     const t = await endpoint();
     const token = process.env.VAULT_STORAGE_TOKEN!;
     expect(
-      (await t.fetch("/vault/rpc", call(`${token}x`, { op: "listProjects", args: {} }))).status,
+      (await t.fetch("/vault/rpc", call(`${token}x`, { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status,
     ).toBe(401);
-    expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: {} }))).status).toBe(
+    expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status).toBe(
       401,
     );
     expect((await t.fetch("/vault/rpc", call(token, { op: "nope", args: {} }))).status).toBe(404);
     expect(
-      (await t.fetch("/vault/rpc", call(token, { op: "listProjects", args: {} }))).status,
+      (await t.fetch("/vault/rpc", call(token, { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status,
     ).toBe(200);
 
     process.env.VAULT_STORAGE_TOKEN = "";
     try {
-      expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: {} }))).status).toBe(
+      expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status).toBe(
         500,
       );
     } finally {

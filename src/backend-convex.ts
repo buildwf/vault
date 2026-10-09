@@ -14,6 +14,7 @@ import type {
   AuditRow,
   KeyRow,
   NamedRow,
+  OrgRow,
   RevokeOutcome,
   SecretRow,
   VaultBackend,
@@ -88,6 +89,16 @@ export class ConvexBackend implements VaultBackend {
     return this.call<boolean>("deleteWrap", input);
   }
 
+  createOrg(input: { org: OrgRow; key: KeyRow }) {
+    return this.call<boolean>("createOrg", input);
+  }
+  getOrg(input: { id: string }) {
+    return this.call<OrgRow | null>("getOrg", input);
+  }
+  listOrgs(input: Record<string, never>) {
+    return this.call<string[]>("listOrgs", input);
+  }
+
   insertKey(input: { key: KeyRow }) {
     return this.call<void>("insertKey", input);
   }
@@ -100,13 +111,13 @@ export class ConvexBackend implements VaultBackend {
   findKeyByHash(input: { keyHash: string }) {
     return this.call<KeyRow | null>("findKeyByHash", input);
   }
-  findKeyByPrefix(input: { keyPrefix: string }) {
+  findKeyByPrefix(input: { orgId: string; keyPrefix: string }) {
     return this.call<KeyRow | null>("findKeyByPrefix", input);
   }
-  listKeys(input: { includeRevoked: boolean }) {
+  listKeys(input: { orgId: string; includeRevoked: boolean }) {
     return this.call<KeyRow[]>("listKeys", input);
   }
-  revokeKey(input: { keyPrefix: string; revokedAt: string }) {
+  revokeKey(input: { orgId: string; keyPrefix: string; revokedAt: string }) {
     return this.call<RevokeOutcome>("revokeKey", input);
   }
   rotateKey(input: { key: KeyRow; revokePrefix: string; revokedAt: string }) {
@@ -117,15 +128,15 @@ export class ConvexBackend implements VaultBackend {
   }
 
   createProject(input: {
-    project: NamedRow & { createdAt: string };
+    project: NamedRow & { orgId: string; createdAt: string };
     environments: NamedRow[];
   }) {
     return this.call<boolean>("createProject", input);
   }
-  listProjects(input: Record<string, never>) {
+  listProjects(input: { orgId: string }) {
     return this.call<string[]>("listProjects", input);
   }
-  getProject(input: { name: string }) {
+  getProject(input: { orgId: string; name: string }) {
     return this.call<NamedRow | null>("getProject", input);
   }
   deleteProject(input: { id: string }) {
@@ -165,7 +176,11 @@ export class ConvexBackend implements VaultBackend {
   insertAudit(input: { event: AuditRow }) {
     return this.call<void>("insertAudit", input);
   }
-  listAudit(input: { limit: number; before: { createdAt: string; id: string } | null }) {
+  listAudit(input: {
+    orgId: string;
+    limit: number;
+    before: { createdAt: string; id: string } | null;
+  }) {
     return this.call<AuditRow[]>("listAudit", input);
   }
   /** Convex caps the rows one mutation may write, so this deletes in batches. */

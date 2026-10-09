@@ -11,12 +11,30 @@
  * action, `backend-convex.ts` and `convex/`). Each method takes one object
  * argument so the Convex side can expose the same names with the same shapes.
  *
+ * Keys, projects and audit rows belong to an org (`orgId`). Every org-scoped
+ * method takes the org and must never return or change another org's row; the
+ * Worker resolves the org from the caller's key before it touches anything.
+ * `DEFAULT_ORG` is the vault's own org: what bootstrap creates and every row
+ * that predates orgs belongs to. D1 holds only that org; additional orgs need
+ * Convex storage.
+ *
  * Methods that the D1 schema made atomic with a constraint, trigger or batch
  * (bootstrap claim, unique names, the last-user-key guard, key rotation) must
  * stay atomic in every backend. They report the refused case as a value rather
  * than an exception so that each backend can say it the same way.
  */
 import type { AuditAction, KeyMode, KeyType, Permission, SecretKind } from "./types.ts";
+
+/** The vault's own org: bootstrap, pre-org rows, and the platform operators. */
+export const DEFAULT_ORG = "default";
+
+export type OrgRow = {
+  id: string;
+  name: string;
+  /** The org's data key, encrypted by the vault data key. */
+  wrappedDataKey: string;
+  createdAt: string;
+};
 
 export type WrapRow = {
   fingerprint: string;
@@ -26,6 +44,7 @@ export type WrapRow = {
 
 export type KeyRow = {
   id: string;
+  orgId: string;
   keyPrefix: string;
   keyHash: string;
   type: KeyType;
@@ -54,6 +73,7 @@ export type SecretRow = {
 
 export type AuditRow = {
   id: string;
+  orgId: string;
   keyPrefix: string;
   action: AuditAction;
   hostEncrypted: string | null;
@@ -72,20 +92,31 @@ export interface VaultBackend {
   listWraps(input: Record<string, never>): Promise<WrapRow[]>;
   deleteWrap(input: { fingerprint: string }): Promise<boolean>;
 
+  /** Creates the org and its first key together; false if the name exists. */
+  createOrg(input: { org: OrgRow; key: KeyRow }): Promise<boolean>;
+  getOrg(input: { id: string }): Promise<OrgRow | null>;
+  /** Names, sorted; never includes `DEFAULT_ORG`. */
+  listOrgs(input: Record<string, never>): Promise<string[]>;
+
   insertKey(input: { key: KeyRow }): Promise<void>;
   /** Claims the singleton bootstrap and inserts its key together; false if already claimed. */
   claimBootstrap(input: { claimedAt: string; key: KeyRow }): Promise<boolean>;
   isBootstrapped(input: Record<string, never>): Promise<boolean>;
+  /** Any org: the caller's key is how the Worker learns its org. */
   findKeyByHash(input: { keyHash: string }): Promise<KeyRow | null>;
-  findKeyByPrefix(input: { keyPrefix: string }): Promise<KeyRow | null>;
+  findKeyByPrefix(input: { orgId: string; keyPrefix: string }): Promise<KeyRow | null>;
   /** Ordered by creation time. */
-  listKeys(input: { includeRevoked: boolean }): Promise<KeyRow[]>;
+  listKeys(input: { orgId: string; includeRevoked: boolean }): Promise<KeyRow[]>;
   /**
-   * Revokes an active key. Refuses (`last_user_key`) when it is the only
+   * Revokes an active key. Refuses (`last_user_key`) when it is the org's only
    * unexpired, unrevoked user key left.
    */
-  revokeKey(input: { keyPrefix: string; revokedAt: string }): Promise<RevokeOutcome>;
-  /** Inserts the replacement and revokes the current key as one change. */
+  revokeKey(input: {
+    orgId: string;
+    keyPrefix: string;
+    revokedAt: string;
+  }): Promise<RevokeOutcome>;
+  /** Inserts the replacement and revokes the current key (same org) as one change. */
   rotateKey(input: {
     key: KeyRow;
     revokePrefix: string;
@@ -95,12 +126,12 @@ export interface VaultBackend {
 
   /** Creates the project and its environments together; false if the name exists. */
   createProject(input: {
-    project: NamedRow & { createdAt: string };
+    project: NamedRow & { orgId: string; createdAt: string };
     environments: NamedRow[];
   }): Promise<boolean>;
   /** Names, sorted. */
-  listProjects(input: Record<string, never>): Promise<string[]>;
-  getProject(input: { name: string }): Promise<NamedRow | null>;
+  listProjects(input: { orgId: string }): Promise<string[]>;
+  getProject(input: { orgId: string; name: string }): Promise<NamedRow | null>;
   /** Deletes the project with its environments and their secrets. */
   deleteProject(input: { id: string }): Promise<void>;
   /** False if the project already has an environment with this name. */
@@ -124,9 +155,10 @@ export interface VaultBackend {
   insertAudit(input: { event: AuditRow }): Promise<void>;
   /** Newest first by `(createdAt, id)`, strictly before the cursor when one is given. */
   listAudit(input: {
+    orgId: string;
     limit: number;
     before: { createdAt: string; id: string } | null;
   }): Promise<AuditRow[]>;
-  /** Deletes audit rows created before the cutoff; returns how many. */
+  /** Deletes audit rows of every org created before the cutoff; returns how many. */
   pruneAudit(input: { before: string }): Promise<number>;
 }

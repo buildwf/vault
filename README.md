@@ -245,9 +245,7 @@ both refuse to run with a shorter or missing one. To rotate it, set the new
 value in Convex and Secrets Store together; requests fail with a 500 in
 between.
 
-Each vault deployment is its own trust domain: every operator key on it can
-read every project. Give each organization its own Worker, Secrets Store roots
-and Convex deployment rather than sharing one.
+A Convex-backed vault can host several organizations; see Orgs.
 
 `bun run test` runs the whole suite twice, once against D1 and once against
 the real `convex/` functions under `convex-test`, through the same HTTP action
@@ -256,6 +254,32 @@ and token check. The D1-only operator scripts (`acceptance`,
 vault from Convex's own backups, together with the matching Secrets Store root
 (see [RECOVERY.md](RECOVERY.md)). `convex/_generated/` is committed;
 `bunx convex dev` or `bunx convex deploy` regenerates it.
+
+## Orgs
+
+A Convex-backed deployment can hold many organizations. Every API key, project
+and audit event belongs to one org, and a key only ever sees its own org: its
+projects, secrets, keys and audit log. Project names are unique per org, so two
+orgs can each have a `web` project. Each org has its own data key, stored
+encrypted by the vault data key, so one org's rows are ciphertext to another
+org's keys. Root rotation is unchanged; it never touches org keys.
+
+The org that bootstrap creates is the platform org (`default`). Every row from
+before orgs existed belongs to it. Its operators are platform operators: only
+they create orgs and manage master keys.
+
+```sh
+vault orgs create acme            # prints acme's first operator key once
+vault orgs list
+```
+
+Give the printed key to the org's first operator. They use it like any operator
+key (`VAULT_API_KEY` or `vault login`) to create projects and share scoped
+system keys. Within an org, the last active operator key still cannot be
+revoked.
+
+D1 deployments hold only the platform org; `vault orgs create` answers 501
+there.
 
 ## Local development
 

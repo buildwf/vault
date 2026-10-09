@@ -6,6 +6,10 @@
  * name. A secret's name is written twice: `key_encrypted` for retrieval and
  * `key_hash` (keyed HMAC) for lookup and uniqueness.
  *
+ * A store is bound to one org and that org's crypto: every key, project and
+ * audit row it reads or writes is that org's, so a route cannot reach another
+ * org by forgetting to pass one.
+ *
  * The rows themselves live behind `VaultBackend` (D1 or Convex); this class
  * never builds a query.
  *
@@ -15,7 +19,7 @@
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/database/}
  */
-import type { KeyRow, SecretRow, VaultBackend } from "./backend.ts";
+import { DEFAULT_ORG, type KeyRow, type SecretRow, type VaultBackend } from "./backend.ts";
 import type { VaultCrypto } from "./crypto.ts";
 import { PolicyError } from "./policy.ts";
 import type {
@@ -57,7 +61,31 @@ export class VaultStore {
   constructor(
     private readonly backend: VaultBackend,
     private readonly vaultCrypto: VaultCrypto,
+    readonly orgId: string = DEFAULT_ORG,
   ) {}
+
+  /** Creates this store's org, keyed by its crypto, together with its first operator key. */
+  async createOrg(
+    name: string,
+    wrappedDataKey: string,
+    key: { plaintext: string; prefix: string; label: string; expiresAt: string },
+  ): Promise<void> {
+    const created = await this.backend.createOrg({
+      org: { id: this.orgId, name, wrappedDataKey, createdAt: nowIso() },
+      key: await this.keyRow({
+        ...key,
+        type: "user",
+        permission: "full",
+        mode: null,
+        scopes: null,
+      }),
+    });
+    if (!created) throw new PolicyError(409, `org "${name}" already exists`);
+  }
+
+  async listOrgs(): Promise<string[]> {
+    return this.backend.listOrgs({});
+  }
 
   async insertKey(input: NewKey): Promise<void> {
     await this.backend.insertKey({ key: await this.keyRow(input) });
@@ -89,6 +117,7 @@ export class VaultStore {
   private async keyRow(input: NewKey): Promise<KeyRow> {
     return {
       id: newId(),
+      orgId: this.orgId,
       keyPrefix: input.prefix,
       keyHash: await this.vaultCrypto.sha256(input.plaintext),
       type: input.type,
@@ -111,21 +140,22 @@ export class VaultStore {
   async findKeyByPlaintext(plaintext: string): Promise<ApiKeyRecord | null> {
     const keyHash = await this.vaultCrypto.sha256(plaintext);
     const row = await this.backend.findKeyByHash({ keyHash });
-    return row == null ? null : this.toApiKey(row);
+    return row == null || row.orgId !== this.orgId ? null : this.toApiKey(row);
   }
 
   async findKeyByPrefix(prefix: string): Promise<ApiKeyRecord | null> {
-    const row = await this.backend.findKeyByPrefix({ keyPrefix: prefix });
+    const row = await this.backend.findKeyByPrefix({ orgId: this.orgId, keyPrefix: prefix });
     return row == null ? null : this.toApiKey(row);
   }
 
   async listKeys(includeRevoked = false): Promise<ApiKeyRecord[]> {
-    const rows = await this.backend.listKeys({ includeRevoked });
+    const rows = await this.backend.listKeys({ orgId: this.orgId, includeRevoked });
     return Promise.all(rows.map((row) => this.toApiKey(row)));
   }
 
   async revokeKey(prefix: string): Promise<boolean> {
     const outcome = await this.backend.revokeKey({
+      orgId: this.orgId,
       keyPrefix: prefix,
       revokedAt: nowIso(),
     });
@@ -164,7 +194,7 @@ export class VaultStore {
     const id = newId();
     const normalized = name.toLowerCase();
     const created = await this.backend.createProject({
-      project: { id, name: normalized, createdAt: nowIso() },
+      project: { id, orgId: this.orgId, name: normalized, createdAt: nowIso() },
       environments: DEFAULT_ENVIRONMENTS.map((env) => ({ id: newId(), name: env })),
     });
     if (!created) throw new PolicyError(409, `project "${normalized}" already exists`);
@@ -172,11 +202,11 @@ export class VaultStore {
   }
 
   async listProjects(): Promise<string[]> {
-    return this.backend.listProjects({});
+    return this.backend.listProjects({ orgId: this.orgId });
   }
 
   async getProject(name: string): Promise<{ id: string; name: string } | null> {
-    return this.backend.getProject({ name: name.toLowerCase() });
+    return this.backend.getProject({ orgId: this.orgId, name: name.toLowerCase() });
   }
 
   async deleteProject(name: string): Promise<boolean> {
@@ -314,6 +344,7 @@ export class VaultStore {
     await this.backend.insertAudit({
       event: {
         id: newId(),
+        orgId: this.orgId,
         keyPrefix: input.keyPrefix,
         action: input.action,
         hostEncrypted: null,
@@ -333,6 +364,7 @@ export class VaultStore {
     beforeId?: string;
   }): Promise<AuditRecord[]> {
     const rows = await this.backend.listAudit({
+      orgId: this.orgId,
       limit: Math.max(1, Math.min(input.limit, 200)),
       before:
         input.beforeCreatedAt != null && input.beforeId != null
@@ -362,7 +394,9 @@ export class VaultStore {
     return this.backend.pruneAudit({ before });
   }
 
-  private async toApiKey(row: KeyRow): Promise<ApiKeyRecord> {
+  /** Decrypts a key row of this store's org. */
+  async toApiKey(row: KeyRow): Promise<ApiKeyRecord> {
+    if (row.orgId !== this.orgId) throw new Error("key belongs to another org");
     // SAFETY: keyRow encrypts the JSON serialization of its validated Scope[];
     // rotateKey preserves that value when issuing the replacement key.
     const scopes =
@@ -371,6 +405,7 @@ export class VaultStore {
         : null;
     return {
       id: row.id,
+      orgId: row.orgId,
       keyPrefix: row.keyPrefix,
       type: row.type,
       label:
