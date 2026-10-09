@@ -19,8 +19,7 @@ const productionSchema = v.looseObject({
         value: v.picklist(["primary", "secondary"]),
       }),
       AUDIT_RETENTION_DAYS: textSchema,
-      // Absent when VAULT_STORAGE=convex; the D1-only scripts check for it.
-      DB: v.optional(v.object({ type: v.literal("d1"), name: v.string(), id: v.string() })),
+      DB: v.object({ type: v.literal("d1"), name: v.string(), id: v.string() }),
       MASTER_KEY_PRIMARY: storeSecretSchema,
       MASTER_KEY_SECONDARY: storeSecretSchema,
       BOOTSTRAP_TOKEN: storeSecretSchema,

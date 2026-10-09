@@ -3,7 +3,7 @@
  *
  * Every request resolves both root-key slots and the bootstrap token from
  * Secrets Store, selects the active root by `ACTIVE_MASTER_KEY`, opens the
- * storage backend `VAULT_STORAGE` names (D1 or Convex, see `storage.ts`), opens
+ * D1 backend over the `DB` binding, opens
  * the keyring over it, and builds the Hono application around the result.
  *
  * A `MasterKeyError` anywhere in that chain answers 500 and logs one structured
@@ -20,6 +20,7 @@
  * @see {@link https://vault.buildwithfriends.dev/concepts/architecture/}
  */
 import { createApp } from "./app.ts";
+import { D1Backend } from "./backend-d1.ts";
 import { MasterKeyError } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
 import { VaultKeyring } from "./keyring.ts";
@@ -28,7 +29,6 @@ import {
   readRuntimeSecret,
   resolveMasterKeys,
 } from "./runtime-secrets.ts";
-import { openBackend } from "./storage.ts";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -36,7 +36,7 @@ export default {
       const [masterKeys, bootstrapToken, backend] = await Promise.all([
         resolveMasterKeys(env),
         readRuntimeSecret(env.BOOTSTRAP_TOKEN, "BOOTSTRAP_TOKEN"),
-        openBackend(env),
+        new D1Backend(env.DB),
       ]);
       const keyring = await VaultKeyring.open(backend, masterKeys.active);
       return await createApp(keyring, {
@@ -56,7 +56,7 @@ export default {
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const masterKeys = await resolveMasterKeys(env);
-    const keyring = await VaultKeyring.open(await openBackend(env), masterKeys.active);
+    const keyring = await VaultKeyring.open(new D1Backend(env.DB), masterKeys.active);
     const store = new VaultStore(keyring.backend, keyring.crypto);
     const cutoff = new Date(
       Date.now() - auditRetentionDays(env) * 24 * 60 * 60 * 1000,

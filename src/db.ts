@@ -10,7 +10,7 @@
  * audit row it reads or writes is that org's, so a route cannot reach another
  * org by forgetting to pass one.
  *
- * The rows themselves live behind `VaultBackend` (D1 or Convex); this class
+ * The rows themselves live behind `VaultBackend` (D1); this class
  * never builds a query.
  *
  * Failures throw `PolicyError` with the HTTP status they should surface, which

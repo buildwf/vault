@@ -4,30 +4,28 @@
  * the atomic work; this file translates their failures into the outcomes
  * `VaultBackend` promises.
  *
- * D1 holds one org, `DEFAULT_ORG`: its rows have no org column, an org-scoped
- * read for any other org finds nothing, and creating an org is refused.
- * Additional orgs need Convex storage.
+ * Keys, projects and audit rows carry `org_id`; every org-scoped query filters
+ * on it, and project names are unique per org (`migrations/0003_orgs.sql`).
  *
  * Audit paging is keyset, not offset: `(created_at DESC, id DESC)` matches the
  * index exactly, so a deep page is a range scan and a row inserted mid-scroll
  * cannot shift the window.
  */
-import {
-  DEFAULT_ORG,
-  type AuditRow,
-  type KeyRow,
-  type NamedRow,
-  type OrgRow,
-  type RevokeOutcome,
-  type SecretRow,
-  type VaultBackend,
-  type WrapRow,
+import type {
+  AuditRow,
+  KeyRow,
+  NamedRow,
+  OrgRow,
+  RevokeOutcome,
+  SecretRow,
+  VaultBackend,
+  WrapRow,
 } from "./backend.ts";
-import { PolicyError } from "./policy.ts";
 import type { AuditAction, KeyMode, KeyType, Permission, SecretKind } from "./types.ts";
 
 type KeySqlRow = {
   id: string;
+  org_id: string;
   key_prefix: string;
   key_hash: string;
   type: KeyType;
@@ -54,6 +52,7 @@ type SecretSqlRow = {
 
 type AuditSqlRow = {
   id: string;
+  org_id: string;
   key_prefix: string;
   action: AuditAction;
   host_encrypted: string | null;
@@ -61,6 +60,8 @@ type AuditSqlRow = {
   status: string;
   created_at: string;
 };
+
+type OrgSqlRow = { id: string; name: string; wrapped_data_key: string; created_at: string };
 
 type WrapSqlRow = { fingerprint: string; wrapped_data_key: string; created_at: string };
 
@@ -70,11 +71,6 @@ const INSERT_ENVIRONMENT =
 
 function isUniqueConstraintFailure(cause: unknown): boolean {
   return String(cause).includes("UNIQUE constraint failed");
-}
-
-/** Refuses a write for an org D1 cannot hold, rather than filing it under the default org. */
-function assertDefaultOrg(orgId: string): void {
-  if (orgId !== DEFAULT_ORG) throw new PolicyError(501, "orgs need Convex storage");
 }
 
 function isLastUserKeyFailure(cause: unknown): boolean {
@@ -125,16 +121,42 @@ export class D1Backend implements VaultBackend {
     return (result.meta.changes ?? 0) > 0;
   }
 
-  async createOrg(_input: { org: OrgRow; key: KeyRow }): Promise<boolean> {
-    throw new PolicyError(501, "orgs need Convex storage");
+  async createOrg({ org, key }: { org: OrgRow; key: KeyRow }): Promise<boolean> {
+    if (key.orgId !== org.id) throw new Error("the first key must belong to the new org");
+    try {
+      await this.db.batch([
+        this.db
+          .prepare("INSERT INTO orgs (id, name, wrapped_data_key, created_at) VALUES (?, ?, ?, ?)")
+          .bind(org.id, org.name, org.wrappedDataKey, org.createdAt),
+        this.insertKeyStatement(key),
+      ]);
+      return true;
+    } catch (error) {
+      if (String(error).includes("UNIQUE constraint failed: orgs.name")) return false;
+      throw error;
+    }
   }
 
-  async getOrg(_input: { id: string }): Promise<OrgRow | null> {
-    return null;
+  async getOrg({ id }: { id: string }): Promise<OrgRow | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM orgs WHERE id = ?")
+      .bind(id)
+      .first<OrgSqlRow>();
+    return row == null
+      ? null
+      : {
+          id: row.id,
+          name: row.name,
+          wrappedDataKey: row.wrapped_data_key,
+          createdAt: row.created_at,
+        };
   }
 
   async listOrgs(): Promise<string[]> {
-    return [];
+    const result = await this.db
+      .prepare("SELECT name FROM orgs ORDER BY name")
+      .all<{ name: string }>();
+    return (result.results ?? []).map((row) => row.name);
   }
 
   async insertKey({ key }: { key: KeyRow }): Promise<void> {
@@ -186,10 +208,9 @@ export class D1Backend implements VaultBackend {
     orgId: string;
     keyPrefix: string;
   }): Promise<KeyRow | null> {
-    if (orgId !== DEFAULT_ORG) return null;
     const row = await this.db
-      .prepare("SELECT * FROM api_keys WHERE key_prefix = ?")
-      .bind(keyPrefix)
+      .prepare("SELECT * FROM api_keys WHERE org_id = ? AND key_prefix = ?")
+      .bind(orgId, keyPrefix)
       .first<KeySqlRow>();
     return row == null ? null : toKey(row);
   }
@@ -201,13 +222,13 @@ export class D1Backend implements VaultBackend {
     orgId: string;
     includeRevoked: boolean;
   }): Promise<KeyRow[]> {
-    if (orgId !== DEFAULT_ORG) return [];
     const result = await this.db
       .prepare(
-        `SELECT * FROM api_keys
-         ${includeRevoked ? "" : "WHERE revoked = 0"}
+        `SELECT * FROM api_keys WHERE org_id = ?
+         ${includeRevoked ? "" : "AND revoked = 0"}
          ORDER BY created_at`,
       )
+      .bind(orgId)
       .all<KeySqlRow>();
     return (result.results ?? []).map(toKey);
   }
@@ -221,9 +242,8 @@ export class D1Backend implements VaultBackend {
     keyPrefix: string;
     revokedAt: string;
   }): Promise<RevokeOutcome> {
-    if (orgId !== DEFAULT_ORG) return "not_found";
     try {
-      const result = await this.revokeStatement(keyPrefix, revokedAt).run();
+      const result = await this.revokeStatement(orgId, keyPrefix, revokedAt).run();
       return (result.meta.changes ?? 0) > 0 ? "revoked" : "not_found";
     } catch (error) {
       if (isLastUserKeyFailure(error)) return "last_user_key";
@@ -243,7 +263,7 @@ export class D1Backend implements VaultBackend {
     try {
       await this.db.batch([
         this.insertKeyStatement(key),
-        this.revokeStatement(revokePrefix, revokedAt),
+        this.revokeStatement(key.orgId, revokePrefix, revokedAt),
       ]);
       return "rotated";
     } catch (error) {
@@ -266,12 +286,11 @@ export class D1Backend implements VaultBackend {
     project: NamedRow & { orgId: string; createdAt: string };
     environments: NamedRow[];
   }): Promise<boolean> {
-    assertDefaultOrg(project.orgId);
     try {
       await this.db.batch([
         this.db
-          .prepare("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-          .bind(project.id, project.name, project.createdAt),
+          .prepare("INSERT INTO projects (id, org_id, name, created_at) VALUES (?, ?, ?, ?)")
+          .bind(project.id, project.orgId, project.name, project.createdAt),
         ...environments.map((environment) =>
           this.db
             .prepare(INSERT_ENVIRONMENT)
@@ -286,18 +305,17 @@ export class D1Backend implements VaultBackend {
   }
 
   async listProjects({ orgId }: { orgId: string }): Promise<string[]> {
-    if (orgId !== DEFAULT_ORG) return [];
     const result = await this.db
-      .prepare("SELECT name FROM projects ORDER BY name")
+      .prepare("SELECT name FROM projects WHERE org_id = ? ORDER BY name")
+      .bind(orgId)
       .all<{ name: string }>();
     return (result.results ?? []).map((row) => row.name);
   }
 
   async getProject({ orgId, name }: { orgId: string; name: string }): Promise<NamedRow | null> {
-    if (orgId !== DEFAULT_ORG) return null;
     return this.db
-      .prepare("SELECT id, name FROM projects WHERE name = ?")
-      .bind(name)
+      .prepare("SELECT id, name FROM projects WHERE org_id = ? AND name = ?")
+      .bind(orgId, name)
       .first<NamedRow>();
   }
 
@@ -426,16 +444,16 @@ export class D1Backend implements VaultBackend {
   }
 
   async insertAudit({ event }: { event: AuditRow }): Promise<void> {
-    assertDefaultOrg(event.orgId);
     await this.db
       .prepare(
         `INSERT INTO audit_events (
-          id, key_prefix, action, host_encrypted, secret_name_encrypted,
+          id, org_id, key_prefix, action, host_encrypted, secret_name_encrypted,
           status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         event.id,
+        event.orgId,
         event.keyPrefix,
         event.action,
         event.hostEncrypted,
@@ -455,21 +473,20 @@ export class D1Backend implements VaultBackend {
     limit: number;
     before: { createdAt: string; id: string } | null;
   }): Promise<AuditRow[]> {
-    if (orgId !== DEFAULT_ORG) return [];
     const cursorClause =
-      before != null ? "WHERE created_at < ? OR (created_at = ? AND id < ?)" : "";
+      before != null ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
     const statement = this.db.prepare(
       `SELECT * FROM audit_events
-       ${cursorClause}
+       WHERE org_id = ? ${cursorClause}
        ORDER BY created_at DESC, id DESC
        LIMIT ?`,
     );
     const result =
       before != null
         ? await statement
-            .bind(before.createdAt, before.createdAt, before.id, limit)
+            .bind(orgId, before.createdAt, before.createdAt, before.id, limit)
             .all<AuditSqlRow>()
-        : await statement.bind(limit).all<AuditSqlRow>();
+        : await statement.bind(orgId, limit).all<AuditSqlRow>();
     return (result.results ?? []).map(toAudit);
   }
 
@@ -482,16 +499,16 @@ export class D1Backend implements VaultBackend {
   }
 
   private insertKeyStatement(key: KeyRow): D1PreparedStatement {
-    assertDefaultOrg(key.orgId);
     return this.db
       .prepare(
         `INSERT INTO api_keys (
-          id, key_prefix, key_hash, type, label_encrypted, scopes_encrypted,
+          id, org_id, key_prefix, key_hash, type, label_encrypted, scopes_encrypted,
           permission, mode, created_at, expires_at, revoked
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       )
       .bind(
         key.id,
+        key.orgId,
         key.keyPrefix,
         key.keyHash,
         key.type,
@@ -504,13 +521,17 @@ export class D1Backend implements VaultBackend {
       );
   }
 
-  private revokeStatement(keyPrefix: string, revokedAt: string): D1PreparedStatement {
+  private revokeStatement(
+    orgId: string,
+    keyPrefix: string,
+    revokedAt: string,
+  ): D1PreparedStatement {
     return this.db
       .prepare(
         `UPDATE api_keys SET revoked = 1, revoked_at = ?
-         WHERE key_prefix = ? AND revoked = 0`,
+         WHERE org_id = ? AND key_prefix = ? AND revoked = 0`,
       )
-      .bind(revokedAt, keyPrefix);
+      .bind(revokedAt, orgId, keyPrefix);
   }
 }
 
@@ -537,7 +558,7 @@ function toWrap(row: WrapSqlRow): WrapRow {
 function toKey(row: KeySqlRow): KeyRow {
   return {
     id: row.id,
-    orgId: DEFAULT_ORG,
+    orgId: row.org_id,
     keyPrefix: row.key_prefix,
     keyHash: row.key_hash,
     type: row.type,
@@ -568,7 +589,7 @@ function toSecret(row: SecretSqlRow): SecretRow {
 function toAudit(row: AuditSqlRow): AuditRow {
   return {
     id: row.id,
-    orgId: DEFAULT_ORG,
+    orgId: row.org_id,
     keyPrefix: row.key_prefix,
     action: row.action,
     hostEncrypted: row.host_encrypted,

@@ -32,11 +32,6 @@ export default defineConfig(({ mode }) => {
   const workerName = process.env.VAULT_WORKER_NAME ?? "bwf-vault";
   const d1Name = process.env.VAULT_D1_NAME ?? "bwf-vault";
   const prefix = process.env.VAULT_SECRET_PREFIX ?? "BWF_VAULT";
-  // Where the encrypted rows live: D1 (default) or a Convex deployment. The
-  // Worker keeps every key either way; see src/storage.ts.
-  const storage = process.env.VAULT_STORAGE ?? "d1";
-  if (storage !== "d1" && storage !== "convex")
-    throw new Error("cloudflare.config.ts: VAULT_STORAGE must be d1 or convex");
   const storeSecret = (slot: string) =>
     bindings.secretsStoreSecret({
       storeId: required("VAULT_SECRETS_STORE_ID"),
@@ -61,22 +56,12 @@ export default defineConfig(({ mode }) => {
         // .env chose it, two deploys could disagree and lock the vault out.
         ACTIVE_MASTER_KEY: bindings.text("primary"),
         AUDIT_RETENTION_DAYS: bindings.text("365"),
-        VAULT_STORAGE: bindings.text(storage),
-        ...(storage === "convex"
-          ? {
-              CONVEX_SITE_URL: bindings.text(required("CONVEX_SITE_URL")),
-              CONVEX_STORAGE_TOKEN: production
-                ? storeSecret("CONVEX_STORAGE_TOKEN")
-                : bindings.secret(),
-            }
-          : {
-              // migrations_dir has no field here: wrangler and `cf d1 migrations`
-              // both default to ./migrations and the d1_migrations table.
-              DB: bindings.d1({
-                name: d1Name,
-                id: production ? required("VAULT_D1_ID") : LOCAL_D1_ID,
-              }),
-            }),
+        // migrations_dir has no field here: wrangler and `cf d1 migrations`
+        // both default to ./migrations and the d1_migrations table.
+        DB: bindings.d1({
+          name: d1Name,
+          id: production ? required("VAULT_D1_ID") : LOCAL_D1_ID,
+        }),
         ...(production
           ? {
               MASTER_KEY_PRIMARY: storeSecret("MASTER_KEY_PRIMARY"),
