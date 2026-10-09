@@ -39,6 +39,7 @@ export const auditActionSchema = v.picklist([
   "list",
   "master_key_prepare",
   "master_key_retire",
+  "org_create",
   "project_create",
   "project_delete",
   "route_list",
@@ -93,7 +94,7 @@ export type SecretKind = v.InferOutput<typeof secretKindSchema>;
 export type AuditAction = v.InferOutput<typeof auditActionSchema>;
 export type Scope = v.InferOutput<typeof scopeSchema>;
 export type ApiKeyMeta = v.InferOutput<typeof apiKeyMetaSchema>;
-export type ApiKeyRecord = ApiKeyMeta & { id: string };
+export type ApiKeyRecord = ApiKeyMeta & { id: string; orgId: string };
 export type SecretMeta = v.InferOutput<typeof secretMetaSchema>;
 export type SecretRecord = v.InferOutput<typeof secretRecordSchema>;
 export type AuditRecord = v.InferOutput<typeof auditRecordSchema>;

@@ -4,6 +4,10 @@
  * field and every hash is produced by the Worker, which keeps the keys: this
  * deployment stores ciphertext only.
  *
+ * Keys, projects and audit events carry `orgId`: an org's row id, or
+ * `"default"` for the vault's own org (see `DEFAULT_ORG` in `src/backend.ts`).
+ * Every org-scoped lookup goes through an index that starts with it.
+ *
  * Row ids are the Worker's UUIDs (`rowId`), not Convex document ids, so the
  * Worker and both backends share one id space.
  */
@@ -31,8 +35,16 @@ export const wrapFields = {
   createdAt: v.string(),
 };
 
+export const orgFields = {
+  rowId: v.string(),
+  name: v.string(),
+  wrappedDataKey: v.string(),
+  createdAt: v.string(),
+};
+
 export const keyFields = {
   rowId: v.string(),
+  orgId: v.string(),
   keyPrefix: v.string(),
   keyHash: v.string(),
   type: keyType,
@@ -59,6 +71,7 @@ export const secretFields = {
 
 export const auditFields = {
   rowId: v.string(),
+  orgId: v.string(),
   keyPrefix: v.string(),
   // The closed action list is enforced by the Worker's own types; storage
   // keeps whatever action the Worker recorded.
@@ -73,14 +86,20 @@ export default defineSchema({
   masterKeyWraps: defineTable(wrapFields)
     .index("by_fingerprint", ["fingerprint"])
     .index("by_created", ["createdAt"]),
+  orgs: defineTable(orgFields).index("by_name", ["name"]).index("by_row", ["rowId"]),
   apiKeys: defineTable(keyFields)
     .index("by_prefix", ["keyPrefix"])
     .index("by_hash", ["keyHash"])
-    .index("by_created", ["createdAt"])
-    .index("by_type_revoked", ["type", "revoked"]),
+    .index("by_org_created", ["orgId", "createdAt"])
+    .index("by_org_type_revoked", ["orgId", "type", "revoked"]),
   bootstrapState: defineTable({ claimedAt: v.string(), keyPrefix: v.string() }),
-  projects: defineTable({ rowId: v.string(), name: v.string(), createdAt: v.string() })
-    .index("by_name", ["name"])
+  projects: defineTable({
+    rowId: v.string(),
+    orgId: v.string(),
+    name: v.string(),
+    createdAt: v.string(),
+  })
+    .index("by_org_name", ["orgId", "name"])
     .index("by_row", ["rowId"]),
   environments: defineTable({
     rowId: v.string(),
@@ -94,5 +113,7 @@ export default defineSchema({
     "environmentId",
     "keyHash",
   ]),
-  auditEvents: defineTable(auditFields).index("by_created", ["createdAt", "rowId"]),
+  auditEvents: defineTable(auditFields)
+    .index("by_created", ["createdAt", "rowId"])
+    .index("by_org_created", ["orgId", "createdAt", "rowId"]),
 });

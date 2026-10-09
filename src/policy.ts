@@ -1,11 +1,15 @@
 /**
  * The single place a key's authority is decided.
  *
- * Two key types: `user` keys are operators (manage keys, projects, and audit;
- * unscoped) and `system` keys are shared with people and agents (scoped, and
+ * Every key belongs to one org and sees only that org's projects, keys and
+ * audit. Two key types: `user` keys are operators (manage their org's keys,
+ * projects, and audit; unscoped within it) and `system` keys are shared with people and agents (scoped, and
  * never able to manage anything). Legacy `broker`-mode keys are names-only:
  * they may list secret names (what CI gates such as "merge-gate secret
  * status" use) but never read values or write.
+ *
+ * Operators of `DEFAULT_ORG` are platform operators: they alone create orgs and
+ * manage the master keys every org's data key depends on.
  *
  * The `sealed` kind is checked here rather than at a call site: `get` and
  * `?show=1` never return a sealed value; only the `?export=1` path that
@@ -16,6 +20,7 @@
  *
  * @see {@link https://vault.buildwithfriends.dev/concepts/keys-and-policy/}
  */
+import { DEFAULT_ORG } from "./backend.ts";
 import type { ApiKeyRecord, SecretKind } from "./types.ts";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
@@ -36,6 +41,11 @@ export class PolicyError extends Error {
 /** Operators (user keys) manage keys, projects, audit, and master keys. */
 export function isOperator(key: ApiKeyRecord): boolean {
   return key.type === "user";
+}
+
+/** Operators of the vault's own org: create orgs and manage master keys. */
+export function isPlatformOperator(key: ApiKeyRecord): boolean {
+  return isOperator(key) && key.orgId === DEFAULT_ORG;
 }
 
 function canWriteSecrets(key: ApiKeyRecord): boolean {

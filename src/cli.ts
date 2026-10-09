@@ -268,6 +268,8 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
         io.log(`bootstrapped; saved operator key ${durable.prefix} (mode 0600)`);
         return 0;
       }
+      case "orgs":
+        return await runOrgs(flags, io);
       case "projects":
         return await runProjects(flags, io);
       case "environments":
@@ -353,6 +355,23 @@ function createPrivateFile(path: string, contents: string): void {
 
 function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === "EEXIST";
+}
+
+async function runOrgs(flags: Flags, io: { log: (value: string) => void }) {
+  const sub = flags.rest[0] ?? "list";
+  const client = session(flags).client;
+  if (sub === "list") {
+    for (const name of (await client.listOrgs()).orgs) io.log(name);
+    return 0;
+  }
+  const name = flags.rest[1];
+  if (sub !== "create" || name == null) throw new Error("usage: vault orgs list|create NAME");
+  const created = await client.createOrg(name, {
+    label: flags.label,
+    expiresInDays: flags.expiresInDays,
+  });
+  io.log(`org ${created.name}; operator key ${created.prefix} (shown once): ${created.key}`);
+  return 0;
 }
 
 async function runProjects(flags: Flags, io: { log: (value: string) => void }) {
@@ -654,6 +673,7 @@ function helpText(): string {
   vault bootstrap --api-url URL [--label LABEL] [--expires-in-days 90]
   vault login --api-url URL                 # hidden API-key prompt
   vault mcp                                # agent tools: list names, collect secrets
+  vault orgs list|create NAME [--label LABEL] [--expires-in-days 90]   # platform operators
   vault projects list|create NAME|delete NAME --yes
   vault environments list|create NAME|delete NAME --yes
   vault secrets list|get NAME|set NAME [--kind config|secret|sealed] [--random]

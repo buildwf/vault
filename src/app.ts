@@ -1,8 +1,9 @@
 /**
  * The vault HTTP API.
  *
- * Middleware attaches a `VaultStore` and resolves the bearer token to an
- * `ApiKeyRecord` before any route body runs; `POST /v1/bootstrap` is the single
+ * Middleware resolves the bearer token to an `ApiKeyRecord` and attaches a
+ * `VaultStore` bound to that key's org before any route body runs, so every
+ * route sees only its caller's org; `POST /v1/bootstrap` is the single
  * exception, authenticated instead by a constant-time comparison against the
  * Secrets Store bootstrap token.
  *
@@ -25,6 +26,7 @@ import { bodyLimit } from "hono/body-limit";
 import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
 
+import { DEFAULT_ORG } from "./backend.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
@@ -36,6 +38,7 @@ import {
   assertActiveKey,
   assertScope,
   isOperator,
+  isPlatformOperator,
   valueVisibleOnGet,
 } from "./policy.ts";
 import {
@@ -62,6 +65,11 @@ type Variables = {
 
 const nameSchema = v.strictObject({
   name: v.pipe(v.string(), v.minLength(1), v.maxLength(120)),
+});
+const createOrgSchema = v.strictObject({
+  name: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,62}$/)),
+  label: v.optional(nameSchema.entries.name),
+  expiresInDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(365))),
 });
 const bootstrapSchema = v.strictObject({
   label: v.optional(nameSchema.entries.name),
@@ -133,11 +141,20 @@ function operatorOnly(message: string) {
   });
 }
 
+/** Refuse everything but operators of the vault's own org. */
+function platformOnly(message: string) {
+  return createMiddleware<AppEnv>(async (c, next) => {
+    if (!isPlatformOperator(c.get("key"))) throw new PolicyError(403, message);
+    await next();
+  });
+}
+
 export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const manageProjects = operatorOnly("cannot manage projects");
   const manageKeys = operatorOnly("cannot manage keys");
-  const manageMasterKeys = operatorOnly("cannot manage master keys");
+  const manageMasterKeys = platformOnly("cannot manage master keys");
+  const manageOrgs = platformOnly("cannot manage orgs");
 
   app.onError((error, c) => {
     if (error instanceof PolicyError) {
@@ -163,8 +180,8 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   app.use("/v1/*", async (c, next) => {
-    await attachStore(c, keyring);
     if (c.req.path === "/v1/bootstrap" && c.req.method === "POST") {
+      c.set("store", new VaultStore(keyring.backend, keyring.crypto));
       const provided = c.req.header("X-Vault-Bootstrap-Token");
       if (
         provided == null ||
@@ -175,8 +192,35 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       await next();
       return;
     }
-    await attachKey(c);
+    await attachKey(c, keyring);
     await next();
+  });
+
+  app.get("/v1/orgs", manageOrgs, async (c) => {
+    return c.json({ orgs: await c.get("store").listOrgs() });
+  });
+
+  app.post("/v1/orgs", manageOrgs, async (c) => {
+    const body = await parseBody(createOrgSchema, c.req);
+    if (body.name === DEFAULT_ORG) throw new PolicyError(409, `org "${body.name}" already exists`);
+    const orgKey = await keyring.newOrgKey();
+    const org = new VaultStore(keyring.backend, orgKey.crypto, crypto.randomUUID());
+    const generated = randomApiKey("user");
+    await org.createOrg(body.name, orgKey.wrappedDataKey, {
+      plaintext: generated.plaintext,
+      prefix: generated.prefix,
+      label: body.label ?? "primary operator",
+      expiresAt: expiresAtFromDays(body.expiresInDays ?? 90),
+    });
+    await c.get("store").audit({
+      keyPrefix: c.get("key").keyPrefix,
+      action: "org_create",
+      status: "ok",
+    });
+    return c.json(
+      { name: body.name, key: generated.plaintext, prefix: generated.prefix },
+      201,
+    );
   });
 
   app.post("/v1/bootstrap", async (c) => {
@@ -500,24 +544,25 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   return app;
 }
 
-async function attachStore(
-  c: { set: (key: "store", value: VaultStore) => void },
+/** Finds the caller's key in any org, then binds the request's store to that org. */
+async function attachKey(
+  c: {
+    req: { header: (name: string) => string | undefined };
+    set: ((key: "store", value: VaultStore) => void) &
+      ((key: "key", value: ApiKeyRecord) => void);
+  },
   keyring: VaultKeyring,
 ): Promise<void> {
-  c.set("store", new VaultStore(keyring.backend, keyring.crypto));
-}
-
-async function attachKey(c: {
-  req: { header: (name: string) => string | undefined };
-  get: (key: "store") => VaultStore;
-  set: (key: "key", value: ApiKeyRecord) => void;
-}): Promise<void> {
-  const store = c.get("store");
   const token = bearerFrom(c.req.header("Authorization"));
   if (token == null) throw new PolicyError(401, "missing bearer token");
-  const key = await store.findKeyByPlaintext(token);
-  if (key == null) throw new PolicyError(401, "invalid API key");
+  const row = await keyring.backend.findKeyByHash({
+    keyHash: await keyring.crypto.sha256(token),
+  });
+  if (row == null) throw new PolicyError(401, "invalid API key");
+  const store = new VaultStore(keyring.backend, await keyring.cryptoFor(row.orgId), row.orgId);
+  const key = await store.toApiKey(row);
   assertActiveKey(key);
+  c.set("store", store);
   await store.touchKey(key.keyPrefix);
   c.set("key", key);
 }
@@ -527,7 +572,7 @@ function expiresAtFromDays(days: number): string {
 }
 
 function publicKeyMeta(key: ApiKeyRecord): ApiKeyMeta {
-  const { id: _id, ...meta } = key;
+  const { id: _id, orgId: _orgId, ...meta } = key;
   return meta;
 }
 

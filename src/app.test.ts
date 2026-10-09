@@ -97,7 +97,7 @@ describe("worker api", () => {
     const blob = JSON.stringify(dump);
     expect(blob.includes("super-secret-value")).toBe(false);
     expect(blob.includes("TOKEN")).toBe(false);
-    const auditRow = (await backend.listAudit({ limit: 200, before: null })).find(
+    const auditRow = (await backend.listAudit({ orgId: store.orgId, limit: 200, before: null })).find(
       (row) => row.action === "set",
     );
     expect(auditRow?.secretNameEncrypted).toBeString();

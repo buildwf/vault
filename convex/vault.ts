@@ -9,7 +9,9 @@
  * Each mutation is one Convex transaction, which is what keeps the guarantees
  * D1 got from constraints and triggers: the bootstrap claim and its key land
  * together, names stay unique, rotation is insert-and-revoke at once, and the
- * last active user key cannot be revoked.
+ * last active user key of an org cannot be revoked.
+ *
+ * Org-scoped functions take `orgId` and treat another org's row as absent.
  */
 import { v } from "convex/values";
 
@@ -20,7 +22,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
-import { auditFields, keyFields, secretFields, wrapFields } from "./schema";
+import { auditFields, keyFields, orgFields, secretFields, wrapFields } from "./schema";
 
 /** Rows `pruneAudit` deletes per call; the Worker calls again while a call fills it. */
 export const PRUNE_BATCH = 500;
@@ -35,9 +37,19 @@ function wrapRow(doc: Doc<"masterKeyWraps">) {
   };
 }
 
+function orgRow(doc: Doc<"orgs">) {
+  return {
+    id: doc.rowId,
+    name: doc.name,
+    wrappedDataKey: doc.wrappedDataKey,
+    createdAt: doc.createdAt,
+  };
+}
+
 function keyRow(doc: KeyDoc) {
   return {
     id: doc.rowId,
+    orgId: doc.orgId,
     keyPrefix: doc.keyPrefix,
     keyHash: doc.keyHash,
     type: doc.type,
@@ -68,6 +80,7 @@ function secretRow(doc: Doc<"secrets">) {
 function auditRow(doc: Doc<"auditEvents">) {
   return {
     id: doc.rowId,
+    orgId: doc.orgId,
     keyPrefix: doc.keyPrefix,
     action: doc.action,
     hostEncrypted: doc.hostEncrypted,
@@ -83,6 +96,8 @@ const { rowId: _secretRowId, ...secretRest } = secretFields;
 const secretInput = v.object({ id: v.string(), ...secretRest });
 const { rowId: _auditRowId, ...auditRest } = auditFields;
 const auditInput = v.object({ id: v.string(), ...auditRest });
+const { rowId: _orgRowId, ...orgRest } = orgFields;
+const orgInput = v.object({ id: v.string(), ...orgRest });
 const namedInput = { id: v.string(), name: v.string() };
 
 function keyDoc(key: { id: string } & Omit<KeyDoc, "_id" | "_creationTime" | "rowId">) {
@@ -97,6 +112,12 @@ async function keyByPrefix(ctx: QueryCtx, keyPrefix: string) {
     .unique();
 }
 
+/** The org's key with this prefix, or null when it is absent or another org's. */
+async function orgKeyByPrefix(ctx: QueryCtx, orgId: string, keyPrefix: string) {
+  const doc = await keyByPrefix(ctx, keyPrefix);
+  return doc != null && doc.orgId === orgId ? doc : null;
+}
+
 async function keyByHash(ctx: QueryCtx, keyHash: string) {
   return ctx.db
     .query("apiKeys")
@@ -104,11 +125,13 @@ async function keyByHash(ctx: QueryCtx, keyHash: string) {
     .unique();
 }
 
-/** Unrevoked user keys that have not expired at `now`. */
-async function activeUserKeys(ctx: QueryCtx, now: string): Promise<number> {
+/** The org's unrevoked user keys that have not expired at `now`. */
+async function activeUserKeys(ctx: QueryCtx, orgId: string, now: string): Promise<number> {
   const keys = await ctx.db
     .query("apiKeys")
-    .withIndex("by_type_revoked", (q) => q.eq("type", "user").eq("revoked", false))
+    .withIndex("by_org_type_revoked", (q) =>
+      q.eq("orgId", orgId).eq("type", "user").eq("revoked", false),
+    )
     .collect();
   return keys.filter((key) => key.expiresAt > now).length;
 }
@@ -188,6 +211,40 @@ export const deleteWrap = internalMutation({
   },
 });
 
+export const createOrg = internalMutation({
+  args: { org: orgInput, key: keyInput },
+  handler: async (ctx, { org, key }) => {
+    if (key.orgId !== org.id) throw new Error("the first key must belong to the new org");
+    const existing = await ctx.db
+      .query("orgs")
+      .withIndex("by_name", (q) => q.eq("name", org.name))
+      .unique();
+    if (existing != null) return false;
+    await assertNewKey(ctx, key);
+    const { id, ...rest } = org;
+    await ctx.db.insert("orgs", { rowId: id, ...rest });
+    await ctx.db.insert("apiKeys", keyDoc(key));
+    return true;
+  },
+});
+
+export const getOrg = internalQuery({
+  args: { id: v.string() },
+  handler: async (ctx, { id }) => {
+    const doc = await ctx.db
+      .query("orgs")
+      .withIndex("by_row", (q) => q.eq("rowId", id))
+      .unique();
+    return doc == null ? null : orgRow(doc);
+  },
+});
+
+export const listOrgs = internalQuery({
+  args: {},
+  handler: async (ctx) =>
+    (await ctx.db.query("orgs").withIndex("by_name").collect()).map((doc) => doc.name),
+});
+
 export const insertKey = internalMutation({
   args: { key: keyInput },
   handler: async (ctx, { key }) => {
@@ -223,27 +280,30 @@ export const findKeyByHash = internalQuery({
 });
 
 export const findKeyByPrefix = internalQuery({
-  args: { keyPrefix: v.string() },
-  handler: async (ctx, { keyPrefix }) => {
-    const doc = await keyByPrefix(ctx, keyPrefix);
+  args: { orgId: v.string(), keyPrefix: v.string() },
+  handler: async (ctx, { orgId, keyPrefix }) => {
+    const doc = await orgKeyByPrefix(ctx, orgId, keyPrefix);
     return doc == null ? null : keyRow(doc);
   },
 });
 
 export const listKeys = internalQuery({
-  args: { includeRevoked: v.boolean() },
-  handler: async (ctx, { includeRevoked }) => {
-    const docs = await ctx.db.query("apiKeys").withIndex("by_created").collect();
+  args: { orgId: v.string(), includeRevoked: v.boolean() },
+  handler: async (ctx, { orgId, includeRevoked }) => {
+    const docs = await ctx.db
+      .query("apiKeys")
+      .withIndex("by_org_created", (q) => q.eq("orgId", orgId))
+      .collect();
     return docs.filter((doc) => includeRevoked || !doc.revoked).map(keyRow);
   },
 });
 
 export const revokeKey = internalMutation({
-  args: { keyPrefix: v.string(), revokedAt: v.string() },
-  handler: async (ctx, { keyPrefix, revokedAt }) => {
-    const doc = await keyByPrefix(ctx, keyPrefix);
+  args: { orgId: v.string(), keyPrefix: v.string(), revokedAt: v.string() },
+  handler: async (ctx, { orgId, keyPrefix, revokedAt }) => {
+    const doc = await orgKeyByPrefix(ctx, orgId, keyPrefix);
     if (doc == null || doc.revoked) return "not_found" as const;
-    if (isLastActiveUserKey(doc, revokedAt, await activeUserKeys(ctx, revokedAt)))
+    if (isLastActiveUserKey(doc, revokedAt, await activeUserKeys(ctx, orgId, revokedAt)))
       return "last_user_key" as const;
     await ctx.db.patch(doc._id, { revoked: true, revokedAt });
     return "revoked" as const;
@@ -254,7 +314,7 @@ export const rotateKey = internalMutation({
   args: { key: keyInput, revokePrefix: v.string(), revokedAt: v.string() },
   handler: async (ctx, { key, revokePrefix, revokedAt }) => {
     await assertNewKey(ctx, key);
-    const current = await keyByPrefix(ctx, revokePrefix);
+    const current = await orgKeyByPrefix(ctx, key.orgId, revokePrefix);
     // Counted as D1 counts it: after the replacement is inserted.
     const replacementActive =
       key.type === "user" && !key.revoked && key.expiresAt > revokedAt ? 1 : 0;
@@ -263,7 +323,7 @@ export const rotateKey = internalMutation({
       isLastActiveUserKey(
         current,
         revokedAt,
-        (await activeUserKeys(ctx, revokedAt)) + replacementActive,
+        (await activeUserKeys(ctx, key.orgId, revokedAt)) + replacementActive,
       )
     )
       return "last_user_key" as const;
@@ -285,17 +345,18 @@ export const touchKey = internalMutation({
 
 export const createProject = internalMutation({
   args: {
-    project: v.object({ ...namedInput, createdAt: v.string() }),
+    project: v.object({ ...namedInput, orgId: v.string(), createdAt: v.string() }),
     environments: v.array(v.object(namedInput)),
   },
   handler: async (ctx, { project, environments }) => {
     const existing = await ctx.db
       .query("projects")
-      .withIndex("by_name", (q) => q.eq("name", project.name))
+      .withIndex("by_org_name", (q) => q.eq("orgId", project.orgId).eq("name", project.name))
       .unique();
     if (existing != null) return false;
     await ctx.db.insert("projects", {
       rowId: project.id,
+      orgId: project.orgId,
       name: project.name,
       createdAt: project.createdAt,
     });
@@ -315,17 +376,22 @@ export const createProject = internalMutation({
 });
 
 export const listProjects = internalQuery({
-  args: {},
-  handler: async (ctx) =>
-    (await ctx.db.query("projects").withIndex("by_name").collect()).map((doc) => doc.name),
+  args: { orgId: v.string() },
+  handler: async (ctx, { orgId }) =>
+    (
+      await ctx.db
+        .query("projects")
+        .withIndex("by_org_name", (q) => q.eq("orgId", orgId))
+        .collect()
+    ).map((doc) => doc.name),
 });
 
 export const getProject = internalQuery({
-  args: { name: v.string() },
-  handler: async (ctx, { name }) => {
+  args: { orgId: v.string(), name: v.string() },
+  handler: async (ctx, { orgId, name }) => {
     const doc = await ctx.db
       .query("projects")
-      .withIndex("by_name", (q) => q.eq("name", name))
+      .withIndex("by_org_name", (q) => q.eq("orgId", orgId).eq("name", name))
       .unique();
     return doc == null ? null : { id: doc.rowId, name: doc.name };
   },
@@ -488,20 +554,25 @@ export const insertAudit = internalMutation({
 
 export const listAudit = internalQuery({
   args: {
+    orgId: v.string(),
     limit: v.number(),
     before: v.union(v.object({ createdAt: v.string(), id: v.string() }), v.null()),
   },
-  handler: async (ctx, { limit, before }) => {
+  handler: async (ctx, { orgId, limit, before }) => {
     const bounded = Math.max(1, Math.min(Math.floor(limit), 200));
     if (before == null) {
       return (
-        await ctx.db.query("auditEvents").withIndex("by_created").order("desc").take(bounded)
+        await ctx.db
+          .query("auditEvents")
+          .withIndex("by_org_created", (q) => q.eq("orgId", orgId))
+          .order("desc")
+          .take(bounded)
       ).map(auditRow);
     }
     const sameInstant = await ctx.db
       .query("auditEvents")
-      .withIndex("by_created", (q) =>
-        q.eq("createdAt", before.createdAt).lt("rowId", before.id),
+      .withIndex("by_org_created", (q) =>
+        q.eq("orgId", orgId).eq("createdAt", before.createdAt).lt("rowId", before.id),
       )
       .order("desc")
       .take(bounded);
@@ -509,7 +580,9 @@ export const listAudit = internalQuery({
       sameInstant.length < bounded
         ? await ctx.db
             .query("auditEvents")
-            .withIndex("by_created", (q) => q.lt("createdAt", before.createdAt))
+            .withIndex("by_org_created", (q) =>
+              q.eq("orgId", orgId).lt("createdAt", before.createdAt),
+            )
             .order("desc")
             .take(bounded - sameInstant.length)
         : [];

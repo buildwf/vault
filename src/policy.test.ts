@@ -10,6 +10,7 @@ import type { ApiKeyRecord } from "./types.ts";
 
 const user: ApiKeyRecord = {
   id: "1",
+  orgId: "default",
   keyPrefix: "vault_user_aaaa",
   type: "user",
   label: null,
@@ -25,6 +26,7 @@ const user: ApiKeyRecord = {
 
 const broker: ApiKeyRecord = {
   id: "2",
+  orgId: "default",
   keyPrefix: "vault_sys_bbbb",
   type: "system",
   label: null,
@@ -40,6 +42,7 @@ const broker: ApiKeyRecord = {
 
 const inject: ApiKeyRecord = {
   id: "3",
+  orgId: "default",
   keyPrefix: "vault_sys_cccc",
   type: "system",
   label: null,
