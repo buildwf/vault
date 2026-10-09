@@ -19,6 +19,8 @@ values, API-key labels/scopes, and audit host/secret fields are encrypted in D1;
 lookup hashes are keyed. API keys expire, can be rotated or revoked, and a
 database trigger prevents revoking the last active human key.
 
+Short guides in Simplified Technical English are in [docs/](docs/README.md).
+
 ## Install the CLI
 
 Build a platform-specific standalone executable and install it from the
