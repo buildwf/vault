@@ -117,9 +117,7 @@ async function parseBody<TSchema extends v.GenericSchema>(
   return result.output;
 }
 
-type AppBindings = { DB: D1Database };
-
-type AppEnv = { Bindings: AppBindings; Variables: Variables };
+type AppEnv = { Variables: Variables };
 
 type AppOptions = {
   bootstrapToken: string;
@@ -136,7 +134,6 @@ function operatorOnly(message: string) {
 }
 
 export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppEnv> {
-  const vaultCrypto = keyring.crypto;
   const app = new Hono<AppEnv>();
   const manageProjects = operatorOnly("cannot manage projects");
   const manageKeys = operatorOnly("cannot manage keys");
@@ -156,7 +153,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   app.get("/", async (c) => {
-    const store = new VaultStore(c.env.DB, vaultCrypto);
+    const store = new VaultStore(keyring.backend, keyring.crypto);
     return c.json({
       ok: true,
       name: "bwf-vault",
@@ -166,7 +163,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   app.use("/v1/*", async (c, next) => {
-    await attachStore(c, vaultCrypto);
+    await attachStore(c, keyring);
     if (c.req.path === "/v1/bootstrap" && c.req.method === "POST") {
       const provided = c.req.header("X-Vault-Bootstrap-Token");
       if (
@@ -476,12 +473,12 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   app.get("/v1/master-keys", manageMasterKeys, async (c) => {
     return c.json({
       activeFingerprint: keyring.activeFingerprint,
-      wraps: await keyring.list(c.env.DB),
+      wraps: await keyring.list(),
     });
   });
 
   app.post("/v1/master-keys/prepare", manageMasterKeys, async (c) => {
-    const fingerprint = await keyring.prepare(c.env.DB, options.inactiveMasterKey);
+    const fingerprint = await keyring.prepare(options.inactiveMasterKey);
     await c.get("store").audit({
       keyPrefix: c.get("key").keyPrefix,
       action: "master_key_prepare",
@@ -491,7 +488,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   app.delete("/v1/master-keys/:fingerprint", manageMasterKeys, async (c) => {
-    await keyring.retire(c.env.DB, c.req.param("fingerprint"));
+    await keyring.retire(c.req.param("fingerprint"));
     await c.get("store").audit({
       keyPrefix: c.get("key").keyPrefix,
       action: "master_key_retire",
@@ -504,10 +501,10 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
 }
 
 async function attachStore(
-  c: { env: AppBindings; set: (key: "store", value: VaultStore) => void },
-  vaultCrypto: VaultKeyring["crypto"],
+  c: { set: (key: "store", value: VaultStore) => void },
+  keyring: VaultKeyring,
 ): Promise<void> {
-  c.set("store", new VaultStore(c.env.DB, vaultCrypto));
+  c.set("store", new VaultStore(keyring.backend, keyring.crypto));
 }
 
 async function attachKey(c: {

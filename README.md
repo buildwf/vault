@@ -196,6 +196,67 @@ production` refuses to run without the required ids; local mode needs none.
 slot must not depend on whose `.env` deployed. A test fails if anything shaped
 like a Cloudflare id lands in a committed file.
 
+## Convex storage
+
+A deployment can keep its encrypted rows in Convex instead of D1. The Worker,
+the CLI, the HTTP API and the root keys are unchanged: the Worker still holds
+both Secrets Store roots and does every encryption and decryption, so the
+Convex deployment stores only the ciphertext and keyed hashes D1 would hold.
+
+The Worker reaches Convex through one HTTP action, `POST /vault/rpc` in
+`convex/http.ts`, authenticated by a shared token. That action runs exactly
+one internal function from `convex/vault.ts`; none of them is callable
+through the public Convex client. Each is one Convex transaction, which keeps
+the guarantees D1 got from constraints and triggers: one bootstrap claim,
+unique names, atomic key rotation, and no revoking the last active user key.
+
+To set up a Convex-backed vault:
+
+1. Create the Convex deployment and push the functions:
+
+   ```sh
+   bunx convex deploy
+   ```
+
+2. Generate one storage token and set it on both sides: in Convex as
+   `VAULT_STORAGE_TOKEN`, and in the Worker's Secrets Store as
+   `<prefix>_CONVEX_STORAGE_TOKEN` (Wrangler prompts for the value, so it stays
+   out of argv and shell history):
+
+   ```sh
+   openssl rand -base64 48 | tr -d '\n' | bunx convex env set VAULT_STORAGE_TOKEN --prod
+   bunx convex env get VAULT_STORAGE_TOKEN --prod   # copy it for the next prompt
+   bunx wrangler secrets-store secret create "$VAULT_SECRETS_STORE_ID" \
+     --name BWF_VAULT_CONVEX_STORAGE_TOKEN --scopes workers --remote
+   ```
+
+3. In `.env`, set `VAULT_STORAGE=convex` and `CONVEX_SITE_URL` to the
+   deployment's HTTP actions URL (`https://<deployment>.convex.site`).
+   `VAULT_D1_ID` is not needed. Check the bindings, then deploy and bootstrap
+   as in Production deployment:
+
+   ```sh
+   bun run deploy:dry-run
+   bun run deploy
+   ```
+
+The token must be at least 32 characters; the Worker and the Convex action
+both refuse to run with a shorter or missing one. To rotate it, set the new
+value in Convex and Secrets Store together; requests fail with a 500 in
+between.
+
+Each vault deployment is its own trust domain: every operator key on it can
+read every project. Give each organization its own Worker, Secrets Store roots
+and Convex deployment rather than sharing one.
+
+`bun run test` runs the whole suite twice, once against D1 and once against
+the real `convex/` functions under `convex-test`, through the same HTTP action
+and token check. The D1-only operator scripts (`acceptance`,
+`recovery:rehearse`) refuse to run in Convex mode; restore a Convex-backed
+vault from Convex's own backups, together with the matching Secrets Store root
+(see [RECOVERY.md](RECOVERY.md)). `convex/_generated/` is committed;
+`bunx convex dev` or `bunx convex deploy` regenerates it.
+
 ## Local development
 
 ```sh

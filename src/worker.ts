@@ -3,12 +3,14 @@
  *
  * Every request resolves both root-key slots and the bootstrap token from
  * Secrets Store, selects the active root by `ACTIVE_MASTER_KEY`, opens the
- * keyring, and builds the Hono application around the resulting crypto.
+ * storage backend `VAULT_STORAGE` names (D1 or Convex, see `storage.ts`), opens
+ * the keyring over it, and builds the Hono application around the result.
  *
  * A `MasterKeyError` anywhere in that chain answers 500 and logs one structured
- * line. The Worker does not serve with key material it could not verify: a
- * missing root, an unparseable one, or one with no prepared wrap are all
- * configuration errors, not conditions to degrade through.
+ * line. The Worker does not serve with key material or storage it could not
+ * verify: a missing root, an unparseable one, one with no prepared wrap, or an
+ * incomplete storage setting are all configuration errors, not conditions to
+ * degrade through.
  *
  * `scheduled` runs daily and prunes audit rows past
  * `AUDIT_RETENTION_DAYS`. It opens the keyring exactly as a request does, so a
@@ -26,15 +28,17 @@ import {
   readRuntimeSecret,
   resolveMasterKeys,
 } from "./runtime-secrets.ts";
+import { openBackend } from "./storage.ts";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
-      const [masterKeys, bootstrapToken] = await Promise.all([
+      const [masterKeys, bootstrapToken, backend] = await Promise.all([
         resolveMasterKeys(env),
         readRuntimeSecret(env.BOOTSTRAP_TOKEN, "BOOTSTRAP_TOKEN"),
+        openBackend(env),
       ]);
-      const keyring = await VaultKeyring.open(env.DB, masterKeys.active);
+      const keyring = await VaultKeyring.open(backend, masterKeys.active);
       return await createApp(keyring, {
         bootstrapToken,
         inactiveMasterKey: masterKeys.inactive,
@@ -52,8 +56,8 @@ export default {
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const masterKeys = await resolveMasterKeys(env);
-    const keyring = await VaultKeyring.open(env.DB, masterKeys.active);
-    const store = new VaultStore(env.DB, keyring.crypto);
+    const keyring = await VaultKeyring.open(await openBackend(env), masterKeys.active);
+    const store = new VaultStore(keyring.backend, keyring.crypto);
     const cutoff = new Date(
       Date.now() - auditRetentionDays(env) * 24 * 60 * 60 * 1000,
     ).toISOString();

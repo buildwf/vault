@@ -1,21 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { generateMasterKey } from "./crypto.ts";
-import { openMemoryD1 } from "./d1-sqlite.ts";
 import { VaultStore } from "./db.ts";
+import { openTestBackend } from "./harness.ts";
 import { VaultKeyring } from "./keyring.ts";
-
-const migration = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "migrations", "0001_init.sql"),
-  "utf8",
-);
 
 describe("master-key envelope rotation", () => {
   test("a prepared second root unwraps the same data and the old wrap can retire", async () => {
-    const db = openMemoryD1(migration);
+    const db = await openTestBackend();
     const primary = generateMasterKey();
     const secondary = generateMasterKey();
     const first = await VaultKeyring.open(db, primary);
@@ -25,7 +17,7 @@ describe("master-key envelope rotation", () => {
     expect(environment).not.toBeNull();
     await store.setSecret(environment!.id, "TOKEN", "value", "secret");
 
-    const secondaryFingerprint = await first.prepare(db, secondary);
+    const secondaryFingerprint = await first.prepare(secondary);
     const second = await VaultKeyring.open(db, secondary);
     expect(second.activeFingerprint).toBe(secondaryFingerprint);
     expect(
@@ -36,10 +28,10 @@ describe("master-key envelope rotation", () => {
       kind: "secret",
     });
 
-    expect(second.retire(db, secondaryFingerprint)).rejects.toThrow(
+    expect(second.retire(secondaryFingerprint)).rejects.toThrow(
       "cannot retire the active master-key wrap",
     );
-    await second.retire(db, first.activeFingerprint);
+    await second.retire(first.activeFingerprint);
     expect(VaultKeyring.open(db, primary)).rejects.toThrow("has no prepared vault wrap");
   });
 });

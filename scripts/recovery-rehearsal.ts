@@ -25,7 +25,13 @@ async function main(): Promise<void> {
   const timeTravelPath = join(evidenceDirectory, "time-travel.json");
   const exportPath = join(evidenceDirectory, "bwf-vault.sql");
 
-  const { accountId, worker } = await production();
+  const { accountId, worker: deployed } = await production();
+  const database = deployed.env.DB;
+  if (database == null)
+    throw new Error(
+      "the recovery rehearsal covers D1 storage; a Convex-backed vault is restored from Convex backups (see RECOVERY.md)",
+    );
+  const worker = { ...deployed, env: { ...deployed.env, DB: database } };
   const timeTravel = await cf(
     accountId,
     Bun.$`bunx cf d1 time-travel get-bookmark ${worker.env.DB.id}`,

@@ -19,15 +19,17 @@
     "master-keys:prepare-rotation": "bun scripts/rotate-master-key.ts prepare --yes",
     "acceptance": "bun scripts/acceptance.ts",
     "acceptance:collection": "bun scripts/collection-acceptance.ts",
-    "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
-    "test": "bun test src",
+    "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && tsc --noEmit -p convex/tsconfig.json && bun run deploy:dry-run",
+    "test": "bun test src && VAULT_TEST_BACKEND=convex bun test src",
     "types": "cf workers types",
-    "uninstall:cli": "bun scripts/uninstall-cli.ts"
+    "uninstall:cli": "bun scripts/uninstall-cli.ts",
+    "convex:deploy": "convex deploy"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.2.0",
     "@modelcontextprotocol/ext-apps": "2.0.3",
     "@modelcontextprotocol/server": "latest",
+    "convex": "1.46.0",
     "hono": "latest",
     "valibot": "latest",
     "zod": "latest"
@@ -36,6 +38,7 @@
     "@types/bun": "latest",
     "@types/node": "ts6.0",
     "cf": "1.0.0-beta.10",
+    "convex-test": "0.0.60",
     "playwright": "latest",
     "typescript": "latest",
     "wrangler": "latest"

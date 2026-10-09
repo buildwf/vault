@@ -120,7 +120,7 @@ describe("local collection", () => {
 
 describe("create-only Vault API", () => {
   test("encrypts a new value, refuses races and system keys, and never echoes input", async () => {
-    const { app, env, store } = await createTestVault();
+    const { app, env, store, backend } = await createTestVault();
     const key = await bootstrapUser(app, env);
     await app.request(
       "/v1/projects",
@@ -152,7 +152,7 @@ describe("create-only Vault API", () => {
     const { environmentId } = await store.requireEnvironment("demo", "dev");
     const stored = await store.getSecretByName(environmentId, "TEST_KEY");
     expect([synthetic, "synthetic-competitor"]).toContain(stored?.value ?? "");
-    const encrypted = await env.DB.prepare("SELECT value_encrypted FROM secrets").all();
+    const encrypted = await backend.listSecretRows({ environmentId });
     expect(JSON.stringify(encrypted)).not.toContain("synthetic-");
     expect((await write("overwrite")).status).toBe(409);
     expect((await store.getSecretByName(environmentId, "TEST_KEY"))?.value).toBe(
