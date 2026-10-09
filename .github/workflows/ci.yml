@@ -18,13 +18,12 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Typecheck (Worker, browser, Convex)
+      - name: Typecheck (Worker, browser)
         run: |
           bun run types
           bunx tsc --noEmit
           bunx tsc --noEmit -p tsconfig.browser.json
-          bunx tsc --noEmit -p convex/tsconfig.json
-      - name: Unit tests against D1 and Convex
+      - name: Unit tests
         run: bun run test
       - name: Local workerd + D1 acceptance
         run: bun run acceptance

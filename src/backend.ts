@@ -4,24 +4,19 @@
  * Everything that crosses this interface is already encrypted or hashed:
  * names, values, labels, scopes and audit fields arrive as ciphertext, and
  * lookups are by keyed hash. A backend never sees a root key, the data key, or
- * a plaintext secret, which is what lets the rows live outside Cloudflare.
+ * a plaintext secret.
  *
- * Two implementations: `D1Backend` (the original SQL, `backend-d1.ts`) and
- * `ConvexBackend` (a Convex deployment reached over one authenticated HTTP
- * action, `backend-convex.ts` and `convex/`). Each method takes one object
- * argument so the Convex side can expose the same names with the same shapes.
+ * `D1Backend` (`backend-d1.ts`) implements it over the schema in `migrations/`.
  *
  * Keys, projects and audit rows belong to an org (`orgId`). Every org-scoped
  * method takes the org and must never return or change another org's row; the
  * Worker resolves the org from the caller's key before it touches anything.
  * `DEFAULT_ORG` is the vault's own org: what bootstrap creates and every row
- * that predates orgs belongs to. D1 holds only that org; additional orgs need
- * Convex storage.
+ * that predates orgs belongs to.
  *
- * Methods that the D1 schema made atomic with a constraint, trigger or batch
- * (bootstrap claim, unique names, the last-user-key guard, key rotation) must
- * stay atomic in every backend. They report the refused case as a value rather
- * than an exception so that each backend can say it the same way.
+ * Methods that are atomic through a constraint, trigger or batch (bootstrap
+ * claim, unique names, the last-user-key guard, key rotation) report the
+ * refused case as a value rather than an exception.
  */
 import type { AuditAction, KeyMode, KeyType, Permission, SecretKind } from "./types.ts";
 

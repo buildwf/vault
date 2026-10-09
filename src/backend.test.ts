@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_ORG, type AuditRow, type KeyRow, type VaultBackend } from "./backend.ts";
-import { ConvexBackend } from "./backend-convex.ts";
-import { TEST_BACKEND, openTestBackend } from "./harness.ts";
+import { openTestBackend } from "./harness.ts";
 
 const FUTURE = "2999-01-01T00:00:00.000Z";
 const NOW = "2026-10-09T00:00:00.000Z";
@@ -61,7 +60,7 @@ async function projectWithSecret(backend: VaultBackend) {
   });
 }
 
-describe(`${TEST_BACKEND} backend contract`, () => {
+describe("D1 backend contract", () => {
   test("the last unexpired user key cannot be revoked, alone or by rotation", async () => {
     const backend = await openTestBackend();
     await backend.insertKey({ key: userKey("vault_usr_a") });
@@ -185,64 +184,5 @@ describe(`${TEST_BACKEND} backend contract`, () => {
     );
     expect(await backend.findKeyByPrefix({ orgId: DEFAULT_ORG, keyPrefix: "vault_usr_2" })).toBeNull();
     expect(await backend.isBootstrapped({})).toBe(true);
-  });
-});
-
-describe.if(TEST_BACKEND === "convex")("convex storage endpoint", () => {
-  async function endpoint() {
-    const [{ convexTest }, schema] = await Promise.all([
-      import("convex-test"),
-      import("../convex/schema.ts"),
-    ]);
-    const { convexModules } = await import("./harness.ts");
-    return convexTest(schema.default, await convexModules());
-  }
-
-  const call = (token: string, body: unknown) => ({
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  test("refuses a wrong token, an unknown operation, and an unconfigured deployment", async () => {
-    const t = await endpoint();
-    const token = process.env.VAULT_STORAGE_TOKEN!;
-    expect(
-      (await t.fetch("/vault/rpc", call(`${token}x`, { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status,
-    ).toBe(401);
-    expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status).toBe(
-      401,
-    );
-    expect((await t.fetch("/vault/rpc", call(token, { op: "nope", args: {} }))).status).toBe(404);
-    expect(
-      (await t.fetch("/vault/rpc", call(token, { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status,
-    ).toBe(200);
-
-    process.env.VAULT_STORAGE_TOKEN = "";
-    try {
-      expect((await t.fetch("/vault/rpc", call("", { op: "listProjects", args: { orgId: DEFAULT_ORG } }))).status).toBe(
-        500,
-      );
-    } finally {
-      process.env.VAULT_STORAGE_TOKEN = token;
-    }
-  });
-
-  test("prunes more audit rows than one Convex mutation deletes", async () => {
-    const backend = await openTestBackend();
-    for (let index = 0; index < 1200; index++)
-      await backend.insertAudit({
-        event: auditEvent(String(index).padStart(5, "0"), "2026-01-01T00:00:00.000Z"),
-      });
-    expect(await backend.pruneAudit({ before: NOW })).toBe(1200);
-  });
-
-  test("the client refuses plain http and short tokens", () => {
-    expect(
-      () => new ConvexBackend({ siteUrl: "http://vault.example", token: "x".repeat(32) }),
-    ).toThrow("https");
-    expect(
-      () => new ConvexBackend({ siteUrl: "https://vault.convex.site", token: "short" }),
-    ).toThrow("32");
   });
 });

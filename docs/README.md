@@ -6,7 +6,7 @@ These documents use ASD-STE100 Simplified Technical English.
 
 The vault keeps secrets for apps, people and AI agents.
 It is a Cloudflare Worker.
-It keeps encrypted data in D1 or in Convex.
+It keeps encrypted data in D1.
 
 The Worker does all encryption and decryption.
 The storage keeps only ciphertext and keyed hashes.
@@ -26,8 +26,8 @@ Two root keys in Cloudflare Secrets Store protect all data.
 
 | Instance | Storage | Use |
 |---|---|---|
-| `shared-vault.buildwithfriends.workers.dev` | Convex | Hosted, multi-org. The first customer org is `manyave`. |
-| `bwf-vault` | D1 | Build With Friends production. One org only. |
+| `shared-vault.buildwithfriends.workers.dev` | D1 | Hosted, multi-org. The first customer org is `manyave`. |
+| `bwf-vault` | D1 | Build With Friends production. |
 
 ## Documents
 

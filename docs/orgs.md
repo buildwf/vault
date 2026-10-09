@@ -9,9 +9,6 @@ Each org has its own data key.
 Bootstrap makes the platform org, `default`.
 Only platform operators can make orgs.
 
-Only Convex deployments can have more than one org.
-On D1, `vault orgs create` gives the error 501.
-
 ### Make an org
 
 1. Log in with a platform operator key.

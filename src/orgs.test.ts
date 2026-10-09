@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_ORG } from "./backend.ts";
-import { TEST_BACKEND, authHeaders, bootstrapUser, createTestVault } from "./harness.ts";
+import { authHeaders, bootstrapUser, createTestVault } from "./harness.ts";
 
 type Vault = Awaited<ReturnType<typeof createTestVault>>;
 
@@ -35,17 +35,7 @@ async function setSecret(vault: Vault, key: string, project: string, value: stri
   expect(response.status).toBe(200);
 }
 
-describe.if(TEST_BACKEND === "d1")("orgs on D1", () => {
-  test("D1 holds only the default org", async () => {
-    const vault = await createTestVault();
-    const platform = await bootstrapUser(vault.app, vault.env);
-    const response = await call(vault, platform, "POST", "/v1/orgs", { name: "acme" });
-    expect(response.status).toBe(501);
-    expect(await vault.backend.listOrgs({})).toEqual([]);
-  });
-});
-
-describe.if(TEST_BACKEND === "convex")("orgs", () => {
+describe("orgs", () => {
   test("each org sees only its own projects, secrets, keys and audit", async () => {
     const vault = await createTestVault();
     const platform = await bootstrapUser(vault.app, vault.env);
