@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Typecheck (Worker, browser, Convex)
+        run: |
+          bun run types
+          bunx tsc --noEmit
+          bunx tsc --noEmit -p tsconfig.browser.json
+          bunx tsc --noEmit -p convex/tsconfig.json
+      - name: Unit tests against D1 and Convex
+        run: bun run test
+      - name: Local workerd + D1 acceptance
+        run: bun run acceptance
