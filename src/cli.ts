@@ -730,7 +730,7 @@ function helpText(): string {
   vault keys list [--include-revoked]
   vault keys create --type system --scope PROJECT/ENV [--permission read|readwrite|full]
   vault keys rotate PREFIX | revoke PREFIX --yes
-  vault parents list|set NAME --provider cloudflare --config accountId=ID   # value from hidden input
+  vault parents list|set NAME --provider cloudflare|github --config KEY=VALUE   # value from hidden input or stdin
   vault parents minted NAME [--limit N] | revoke NAME --yes | delete NAME --yes
   vault audit [--limit N] [--cursor CURSOR]
   vault master-keys status|prepare|retire FINGERPRINT --yes

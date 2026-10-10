@@ -99,10 +99,12 @@ Store one strong key per service (a parent) and let the Worker mint short-lived,
 scoped child keys from it. Nobody sees the parent or the children: a `minted`
 secret stores a spec, and every export (`vault run`, `use_secret`) mints a
 fresh child from the parent and records it in a ledger with the label
-`PROJECT/ENV/NAME` and the key that asked. Cloudflare is the first provider.
+`PROJECT/ENV/NAME` and the key that asked. Providers: Cloudflare (API tokens)
+and GitHub (App installation tokens).
 
 ```sh
 vault parents set cloudflare --provider cloudflare --config accountId=ACCOUNT_ID
+vault parents set github --provider github --config appId=APP_ID --config installationId=ID < app.pem
 vault secrets set CLOUDFLARE_API_TOKEN --kind minted < spec.json
 vault parents minted cloudflare
 vault parents revoke cloudflare --yes

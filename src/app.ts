@@ -27,7 +27,7 @@ import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
 
 import { DEFAULT_ORG } from "./backend.ts";
-import { Minter, PARENT_NAME, parseParentConfig } from "./parents/minter.ts";
+import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
@@ -480,7 +480,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     const store = c.get("store");
     const name = parentName(c.req.param("name"));
     const body = await parseBody(putParentSchema, c.req);
-    const config = parseParentConfig(body.provider, body.config);
+    const config = await parseParent(body.provider, body.config, body.value);
     await store.setParent({ name, provider: body.provider, config, value: body.value });
     await store.audit({ keyPrefix: key.keyPrefix, action: "parent_set", status: "ok", secretName: name });
     return c.json({ ok: true });

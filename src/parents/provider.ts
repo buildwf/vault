@@ -37,8 +37,12 @@ export interface ParentProvider<TSpec = unknown> {
   readonly name: string;
   /** True when the provider disables a child at its expiry without the vault's help. */
   readonly selfExpiring: boolean;
+  /** The longest `ttlMinutes` the provider can honor, when it has a limit. */
+  readonly maxTtlMinutes?: number;
   /** Validates the parent's non-secret config; throws `Error` with a reason. */
   parseConfig(config: Record<string, string>): Record<string, string>;
+  /** Checks the parent value's format before it is stored; throws `Error` with a reason. */
+  checkValue?(value: string): Promise<void>;
   /** Validates the provider fields of a minted secret's spec; throws `Error` with a reason. */
   parseSpec(spec: Record<string, unknown>): TSpec;
   mint(parent: Parent, spec: TSpec, request: MintRequest, send: Send): Promise<{ id: string; value: string }>;
