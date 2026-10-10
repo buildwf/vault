@@ -12,8 +12,9 @@
  * incomplete storage setting are all configuration errors, not conditions to
  * degrade through.
  *
- * `scheduled` runs daily and prunes audit rows past
- * `AUDIT_RETENTION_DAYS`. It opens the keyring exactly as a request does, so a
+ * `scheduled` runs hourly. It prunes audit rows past `AUDIT_RETENTION_DAYS`
+ * and closes minted child keys past their expiry (revoking them at the
+ * provider). It opens the keyring exactly as a request does, so a
  * misconfigured root fails the cron rather than pruning against the wrong
  * database.
  *
@@ -24,6 +25,7 @@ import { D1Backend } from "./backend-d1.ts";
 import { MasterKeyError } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
 import { VaultKeyring } from "./keyring.ts";
+import { Minter } from "./parents/minter.ts";
 import {
   auditRetentionDays,
   readRuntimeSecret,
@@ -65,5 +67,10 @@ export default {
     console.log(
       JSON.stringify({ message: "vault audit retention complete", deleted, cutoff }),
     );
+    const reaped = await new Minter().reap(
+      keyring.backend,
+      async (orgId) => new VaultStore(keyring.backend, await keyring.cryptoFor(orgId), orgId),
+    );
+    console.log(JSON.stringify({ message: "vault minted keys closed", ...reaped }));
   },
 } satisfies ExportedHandler<Env>;

@@ -27,6 +27,7 @@ import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
 
 import { DEFAULT_ORG } from "./backend.ts";
+import { Minter, PARENT_NAME, parseParentConfig } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
@@ -104,6 +105,11 @@ const patchSecretsSchema = v.strictObject({
   ),
   delete: v.optional(v.array(v.string())),
 });
+const putParentSchema = v.strictObject({
+  provider: v.pipe(v.string(), v.minLength(1), v.maxLength(40)),
+  config: v.optional(v.record(v.string(), v.pipe(v.string(), v.maxLength(200))), {}),
+  value: v.pipe(v.string(), v.minLength(1), v.maxLength(16384)),
+});
 const auditCursorSchema = v.object({
   createdAt: v.string(),
   id: v.string(),
@@ -131,7 +137,15 @@ type AppOptions = {
   bootstrapToken: string;
   /** The root-key slot that is not live; `POST /v1/master-keys/prepare` wraps for it. */
   inactiveMasterKey: string;
+  /** Mints child keys from parent keys; tests pass one with a fake provider transport. */
+  minter?: Minter;
 };
+
+function parentName(name: string): string {
+  if (!PARENT_NAME.test(name))
+    throw new PolicyError(400, "parent names are lowercase letters, digits and -");
+  return name;
+}
 
 /** Refuse non-operator keys with a 403 carrying the route's own message. */
 function operatorOnly(message: string) {
@@ -155,6 +169,8 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   const manageKeys = operatorOnly("cannot manage keys");
   const manageMasterKeys = platformOnly("cannot manage master keys");
   const manageOrgs = platformOnly("cannot manage orgs");
+  const manageParents = operatorOnly("cannot manage parent keys");
+  const minter = options.minter ?? new Minter();
 
   app.onError((error, c) => {
     if (error instanceof PolicyError) {
@@ -319,13 +335,40 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     if (!show && !exporting) {
       return c.json({ secrets: await store.listSecretMeta(environmentId) });
     }
-    const secrets = await store.listSecrets(environmentId);
+    let secrets = await store.listSecrets(environmentId);
+    // `names` narrows an export to the secrets a caller needs, so a brokered
+    // call mints only the child keys it uses.
+    const names = c.req.query("names");
+    if (exporting && names != null) {
+      const wanted = new Set(names.split(","));
+      secrets = secrets.filter((secret) => wanted.has(secret.name));
+    }
+    const values = new Map<string, string | undefined>();
+    for (const secret of secrets) {
+      if (exporting && secret.kind === "minted") {
+        const label = `${project}/${env}/${secret.name}`;
+        try {
+          values.set(
+            secret.name,
+            await minter.mint(store, { value: secret.value, label, keyPrefix: key.keyPrefix }),
+          );
+          await store.audit({ keyPrefix: key.keyPrefix, action: "mint", status: "ok", secretName: secret.name });
+        } catch (error) {
+          await store.audit({ keyPrefix: key.keyPrefix, action: "mint", status: "failed", secretName: secret.name });
+          throw error;
+        }
+        continue;
+      }
+      values.set(
+        secret.name,
+        exporting || valueVisibleOnGet(secret.kind) ? secret.value : undefined,
+      );
+    }
     return c.json({
       secrets: secrets.map((secret) => ({
         name: secret.name,
         kind: secret.kind,
-        value:
-          exporting || valueVisibleOnGet(secret.kind) ? secret.value : undefined,
+        value: values.get(secret.name),
       })),
     });
   });
@@ -401,6 +444,12 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       let value = item.value;
       if (item.random === true) value = randomSecretValue();
       if (value == null) throw new PolicyError(400, `missing value for ${item.name}`);
+      if (kind === "minted") {
+        // A spec chooses what a parent key mints, so only operators may write one.
+        if (!isOperator(key)) throw new PolicyError(403, "only operators can set minted secrets");
+        if (item.random === true) throw new PolicyError(400, "minted secrets cannot be random");
+        await minter.validate(store, value);
+      }
       await store.setSecret(environmentId, item.name, value, kind);
       await store.audit({
         keyPrefix: key.keyPrefix,
@@ -420,6 +469,58 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       }
     }
     return c.json({ ok: true });
+  });
+
+  app.get("/v1/parents", manageParents, async (c) => {
+    return c.json({ parents: await c.get("store").listParents() });
+  });
+
+  app.put("/v1/parents/:name", bodyLimit({ maxSize: 65536 }), manageParents, async (c) => {
+    const key = c.get("key");
+    const store = c.get("store");
+    const name = parentName(c.req.param("name"));
+    const body = await parseBody(putParentSchema, c.req);
+    const config = parseParentConfig(body.provider, body.config);
+    await store.setParent({ name, provider: body.provider, config, value: body.value });
+    await store.audit({ keyPrefix: key.keyPrefix, action: "parent_set", status: "ok", secretName: name });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/v1/parents/:name", manageParents, async (c) => {
+    const key = c.get("key");
+    const name = parentName(c.req.param("name"));
+    await c.get("store").deleteParent(name);
+    await c.get("store").audit({
+      keyPrefix: key.keyPrefix,
+      action: "parent_delete",
+      status: "ok",
+      secretName: name,
+    });
+    return c.json({ ok: true });
+  });
+
+  app.get("/v1/parents/:name/minted", manageParents, async (c) => {
+    const store = c.get("store");
+    const parent = await store.getParent(parentName(c.req.param("name")));
+    if (parent == null) throw new PolicyError(404, "parent not found");
+    const limit = Number(c.req.query("limit") ?? "100");
+    return c.json({
+      minted: await store.listMinted(parent.id, Number.isInteger(limit) ? limit : 100),
+    });
+  });
+
+  app.post("/v1/parents/:name/revoke", manageParents, async (c) => {
+    const key = c.get("key");
+    const store = c.get("store");
+    const name = parentName(c.req.param("name"));
+    const counts = await minter.revokeParent(store, name);
+    await store.audit({
+      keyPrefix: key.keyPrefix,
+      action: "mint_revoke",
+      status: counts.failed + counts.untraceable === 0 ? "ok" : "partial",
+      secretName: name,
+    });
+    return c.json(counts);
   });
 
   app.get("/v1/keys", manageKeys, async (c) => {

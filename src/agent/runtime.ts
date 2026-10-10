@@ -98,7 +98,8 @@ export class AgentRuntime {
     const names = placeholderNames(request);
     if (names.length === 0) throw new Error("use_secret needs at least one {{NAME}} placeholder");
     if (this.ungranted(request).names.length > 0) throw new Error("use_secret is not approved");
-    const { secrets } = await this.client.exportSecrets(this.project, this.env);
+    // Only the named secrets, so a call mints child keys for the parents it uses.
+    const { secrets } = await this.client.exportSecrets(this.project, this.env, names);
     const values = Object.fromEntries(
       secrets.filter((secret) => names.includes(secret.name)).map((s) => [s.name, s.value]),
     );

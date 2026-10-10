@@ -29,6 +29,7 @@ The CLI reads these values:
 | `vault secrets list\|get\|set\|delete NAME` | Manage secrets. |
 | `vault secrets collect NAME` | Open a browser form. A person types the value. |
 | `vault keys list\|create\|rotate\|revoke` | Manage API keys. |
+| `vault parents list\|set\|minted\|revoke\|delete` | Manage parent keys and their child keys. Operators only. See [parent keys](parents.md). |
 | `vault audit` | Show the audit log. |
 | `vault master-keys status\|prepare\|retire` | Manage root keys. Platform operators only. |
 | `vault run -- CMD` | Run a command with the secrets as environment variables. |

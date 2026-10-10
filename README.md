@@ -93,6 +93,25 @@ The holder sets `VAULT_API_URL` and `VAULT_API_KEY` (or runs `vault login`) and
 uses the same commands. Keys expire (default 90 days) and can be rotated or
 revoked at any time.
 
+## Parent keys
+
+Store one strong key per service (a parent) and let the Worker mint short-lived,
+scoped child keys from it. Nobody sees the parent or the children: a `minted`
+secret stores a spec, and every export (`vault run`, `use_secret`) mints a
+fresh child from the parent and records it in a ledger with the label
+`PROJECT/ENV/NAME` and the key that asked. Cloudflare is the first provider.
+
+```sh
+vault parents set cloudflare --provider cloudflare --config accountId=ACCOUNT_ID
+vault secrets set CLOUDFLARE_API_TOKEN --kind minted < spec.json
+vault parents minted cloudflare
+vault parents revoke cloudflare --yes
+```
+
+Only operators manage parents and write minted specs. The hourly cron revokes
+children past their expiry. Apply `migrations/0004_parent_keys.sql` before deploying.
+See [docs/parents.md](docs/parents.md).
+
 ## AI agents
 
 Agents use secrets by running commands under `vault run`, which injects every

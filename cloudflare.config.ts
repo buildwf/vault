@@ -50,7 +50,7 @@ export default defineConfig(({ mode }) => {
         logs: { headSamplingRate: 1 },
         traces: { enabled: true, headSamplingRate: 0.1 },
       },
-      triggers: [triggers.scheduled({ schedule: "0 3 * * *" })],
+      triggers: [triggers.scheduled({ schedule: "17 * * * *" })],
       env: {
         // Which root slot is live. Committed on purpose: if each operator's
         // .env chose it, two deploys could disagree and lock the vault out.

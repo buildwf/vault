@@ -16,6 +16,8 @@ import {
   apiKeyMetaSchema,
   auditRecordSchema,
   masterKeyWrapMetaSchema,
+  mintedKeyMetaSchema,
+  parentMetaSchema,
   secretMetaSchema,
   secretRecordSchema,
 } from "./client-schemas.ts";
@@ -213,10 +215,13 @@ export class VaultClient {
     );
   }
 
-  exportSecrets(project: string, env: string) {
+  /** With `names`, exports (and mints) only those secrets. */
+  exportSecrets(project: string, env: string, names?: string[]) {
+    const query = new URLSearchParams({ export: "1" });
+    if (names != null) query.set("names", names.join(","));
     return this.request(
       "GET",
-      `${this.envPath(project, env)}/secrets?export=1`,
+      `${this.envPath(project, env)}/secrets?${query.toString()}`,
       v.looseObject({ secrets: v.array(secretRecordSchema) }),
     );
   }
@@ -291,6 +296,39 @@ export class VaultClient {
         events: v.array(auditRecordSchema),
         nextCursor: v.nullable(v.string()),
       }),
+    );
+  }
+
+  listParents() {
+    return this.request("GET", "/v1/parents", v.looseObject({ parents: v.array(parentMetaSchema) }));
+  }
+
+  /** Creates or replaces a parent key. The value is write-only: no call returns it. */
+  putParent(name: string, body: { provider: string; config: Record<string, string>; value: string }) {
+    return this.request("PUT", `/v1/parents/${encodeURIComponent(name)}`, okResponseSchema, {
+      body,
+    });
+  }
+
+  deleteParent(name: string) {
+    return this.request("DELETE", `/v1/parents/${encodeURIComponent(name)}`, okResponseSchema);
+  }
+
+  listMinted(name: string, limit = 100) {
+    return this.request(
+      "GET",
+      `/v1/parents/${encodeURIComponent(name)}/minted?limit=${limit}`,
+      v.looseObject({ minted: v.array(mintedKeyMetaSchema) }),
+    );
+  }
+
+  /** Revokes every child key of the parent that may still work. */
+  revokeParent(name: string) {
+    return this.request(
+      "POST",
+      `/v1/parents/${encodeURIComponent(name)}/revoke`,
+      v.looseObject({ revoked: v.number(), failed: v.number(), untraceable: v.number() }),
+      { body: {} },
     );
   }
 

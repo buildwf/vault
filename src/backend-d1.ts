@@ -11,17 +11,27 @@
  * index exactly, so a deep page is a range scan and a row inserted mid-scroll
  * cannot shift the window.
  */
-import type {
-  AuditRow,
-  KeyRow,
-  NamedRow,
-  OrgRow,
-  RevokeOutcome,
-  SecretRow,
-  VaultBackend,
-  WrapRow,
+import {
+  LIVE_MINTED_STATUSES,
+  type AuditRow,
+  type KeyRow,
+  type MintedKeyRow,
+  type NamedRow,
+  type OrgRow,
+  type RevokeOutcome,
+  type ParentRow,
+  type SecretRow,
+  type VaultBackend,
+  type WrapRow,
 } from "./backend.ts";
-import type { AuditAction, KeyMode, KeyType, Permission, SecretKind } from "./types.ts";
+import type {
+  AuditAction,
+  KeyMode,
+  KeyType,
+  MintedKeyStatus,
+  Permission,
+  SecretKind,
+} from "./types.ts";
 
 type KeySqlRow = {
   id: string;
@@ -60,6 +70,33 @@ type AuditSqlRow = {
   status: string;
   created_at: string;
 };
+
+type ParentSqlRow = {
+  id: string;
+  org_id: string;
+  name_hash: string;
+  name_encrypted: string;
+  provider: string;
+  config_encrypted: string;
+  value_encrypted: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type MintedSqlRow = {
+  id: string;
+  org_id: string;
+  parent_id: string;
+  provider_key_id_encrypted: string | null;
+  key_prefix: string;
+  label_encrypted: string;
+  status: MintedKeyStatus;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+};
+
+const LIVE_STATUS_SQL = LIVE_MINTED_STATUSES.map((status) => `'${status}'`).join(", ");
 
 type OrgSqlRow = { id: string; name: string; wrapped_data_key: string; created_at: string };
 
@@ -443,6 +480,186 @@ export class D1Backend implements VaultBackend {
     return row == null ? null : toSecret(row);
   }
 
+  async upsertParent({ parent }: { parent: ParentRow }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO parents (
+          id, org_id, name_hash, name_encrypted, provider, config_encrypted,
+          value_encrypted, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(org_id, name_hash) DO UPDATE SET
+          name_encrypted = excluded.name_encrypted,
+          provider = excluded.provider,
+          config_encrypted = excluded.config_encrypted,
+          value_encrypted = excluded.value_encrypted,
+          updated_at = excluded.updated_at`,
+      )
+      .bind(
+        parent.id,
+        parent.orgId,
+        parent.nameHash,
+        parent.nameEncrypted,
+        parent.provider,
+        parent.configEncrypted,
+        parent.valueEncrypted,
+        parent.createdAt,
+        parent.updatedAt,
+      )
+      .run();
+  }
+
+  async getParent({ orgId, nameHash }: { orgId: string; nameHash: string }): Promise<ParentRow | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM parents WHERE org_id = ? AND name_hash = ?")
+      .bind(orgId, nameHash)
+      .first<ParentSqlRow>();
+    return row == null ? null : toParent(row);
+  }
+
+  async getParentById({ id }: { id: string }): Promise<ParentRow | null> {
+    const row = await this.db
+      .prepare("SELECT * FROM parents WHERE id = ?")
+      .bind(id)
+      .first<ParentSqlRow>();
+    return row == null ? null : toParent(row);
+  }
+
+  async listParents({ orgId }: { orgId: string }): Promise<ParentRow[]> {
+    const result = await this.db
+      .prepare("SELECT * FROM parents WHERE org_id = ? ORDER BY created_at")
+      .bind(orgId)
+      .all<ParentSqlRow>();
+    return (result.results ?? []).map(toParent);
+  }
+
+  async deleteParent({
+    orgId,
+    nameHash,
+    now,
+  }: {
+    orgId: string;
+    nameHash: string;
+    now: string;
+  }): Promise<"deleted" | "not_found" | "live_children"> {
+    const parent = await this.getParent({ orgId, nameHash });
+    if (parent == null) return "not_found";
+    // Expired 'active' rows are dead at providers whose keys expire on their own;
+    // 'pending' and 'unknown' rows may not be, so they block whatever their expiry.
+    const live = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM minted_keys
+         WHERE parent_id = ? AND (status IN ('pending', 'unknown') OR (status = 'active' AND expires_at > ?))`,
+      )
+      .bind(parent.id, now)
+      .first<number>("n");
+    if ((live ?? 0) > 0) return "live_children";
+    // Only finished rows are deleted. A child minted after the count above keeps
+    // its row, and the foreign key then fails the batch rather than orphan it.
+    try {
+      await this.db.batch([
+        this.db
+          .prepare(
+            `DELETE FROM minted_keys WHERE parent_id = ?
+             AND (status IN ('failed', 'revoked', 'expired') OR (status = 'active' AND expires_at <= ?))`,
+          )
+          .bind(parent.id, now),
+        this.db.prepare("DELETE FROM parents WHERE id = ?").bind(parent.id),
+      ]);
+    } catch (cause) {
+      if (String(cause).includes("FOREIGN KEY constraint failed")) return "live_children";
+      throw cause;
+    }
+    return "deleted";
+  }
+
+  async countLiveMinted({ orgId, now }: { orgId: string; now: string }): Promise<Map<string, number>> {
+    const result = await this.db
+      .prepare(
+        `SELECT parent_id, COUNT(*) AS n FROM minted_keys
+         WHERE org_id = ? AND status IN (${LIVE_STATUS_SQL}) AND expires_at > ?
+         GROUP BY parent_id`,
+      )
+      .bind(orgId, now)
+      .all<{ parent_id: string; n: number }>();
+    return new Map((result.results ?? []).map((row) => [row.parent_id, row.n]));
+  }
+
+  async insertMinted({ minted }: { minted: MintedKeyRow }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO minted_keys (
+          id, org_id, parent_id, provider_key_id_encrypted, key_prefix, label_encrypted,
+          status, created_at, expires_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        minted.id,
+        minted.orgId,
+        minted.parentId,
+        minted.providerKeyIdEncrypted,
+        minted.keyPrefix,
+        minted.labelEncrypted,
+        minted.status,
+        minted.createdAt,
+        minted.expiresAt,
+        minted.revokedAt,
+      )
+      .run();
+  }
+
+  async updateMinted({
+    id,
+    status,
+    providerKeyIdEncrypted,
+    revokedAt,
+  }: {
+    id: string;
+    status: MintedKeyStatus;
+    providerKeyIdEncrypted?: string;
+    revokedAt?: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE minted_keys SET
+          status = ?,
+          provider_key_id_encrypted = COALESCE(?, provider_key_id_encrypted),
+          revoked_at = COALESCE(?, revoked_at)
+         WHERE id = ?`,
+      )
+      .bind(status, providerKeyIdEncrypted ?? null, revokedAt ?? null, id)
+      .run();
+  }
+
+  async listMinted({ parentId, limit }: { parentId: string; limit: number }): Promise<MintedKeyRow[]> {
+    const result = await this.db
+      .prepare("SELECT * FROM minted_keys WHERE parent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+      .bind(parentId, limit)
+      .all<MintedSqlRow>();
+    return (result.results ?? []).map(toMinted);
+  }
+
+  async listLiveMinted({ parentId }: { parentId: string }): Promise<MintedKeyRow[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM minted_keys WHERE parent_id = ? AND status IN (${LIVE_STATUS_SQL})
+         ORDER BY created_at`,
+      )
+      .bind(parentId)
+      .all<MintedSqlRow>();
+    return (result.results ?? []).map(toMinted);
+  }
+
+  async listDueMinted({ now, limit }: { now: string; limit: number }): Promise<MintedKeyRow[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT * FROM minted_keys WHERE status IN (${LIVE_STATUS_SQL}) AND expires_at <= ?
+         ORDER BY expires_at LIMIT ?`,
+      )
+      .bind(now, limit)
+      .all<MintedSqlRow>();
+    return (result.results ?? []).map(toMinted);
+  }
+
   async insertAudit({ event }: { event: AuditRow }): Promise<void> {
     await this.db
       .prepare(
@@ -596,5 +813,34 @@ function toAudit(row: AuditSqlRow): AuditRow {
     secretNameEncrypted: row.secret_name_encrypted,
     status: row.status,
     createdAt: row.created_at,
+  };
+}
+
+function toParent(row: ParentSqlRow): ParentRow {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    nameHash: row.name_hash,
+    nameEncrypted: row.name_encrypted,
+    provider: row.provider,
+    configEncrypted: row.config_encrypted,
+    valueEncrypted: row.value_encrypted,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toMinted(row: MintedSqlRow): MintedKeyRow {
+  return {
+    id: row.id,
+    orgId: row.org_id,
+    parentId: row.parent_id,
+    providerKeyIdEncrypted: row.provider_key_id_encrypted,
+    keyPrefix: row.key_prefix,
+    labelEncrypted: row.label_encrypted,
+    status: row.status,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
   };
 }
