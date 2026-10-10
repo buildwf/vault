@@ -43,6 +43,8 @@ const options = {
   type: { type: "string" },
   permission: { type: "string" },
   kind: { type: "string" },
+  provider: { type: "string" },
+  config: { type: "string", multiple: true },
   cursor: { type: "string" },
   scope: { type: "string", multiple: true },
   "expires-in-days": { type: "string" },
@@ -124,6 +126,8 @@ export function parseArgv(argv: string[]) {
       type: text("type"),
       permission: text("permission"),
       kind: text("kind"),
+      provider: text("provider"),
+      config: seen.get("config") ?? [],
       cursor: text("cursor"),
       scopes: seen.get("scope") ?? [],
       expiresInDays: integer("expires-in-days"),
@@ -289,6 +293,8 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
         return await runSecrets(flags, io);
       case "keys":
         return await runKeys(flags, io);
+      case "parents":
+        return await runParents(flags, io);
       case "audit": {
         const page = await session(flags).client.listAudit(
           flags.limit ?? 50,
@@ -495,7 +501,7 @@ async function runSecrets(flags: Flags, io: { log: (value: string) => void }) {
   if (sub === "set") {
     const kind = enumValue<SecretKind>(
       flags.kind,
-      ["config", "secret", "sealed"],
+      ["config", "secret", "sealed", "minted"],
       "secret",
       "--kind",
     );
@@ -562,6 +568,48 @@ async function runKeys(flags: Flags, io: { log: (value: string) => void }) {
     return 0;
   }
   throw new Error(`unknown keys command: ${sub}`);
+}
+
+async function runParents(flags: Flags, io: { log: (value: string) => void }) {
+  const sub = flags.rest[0] ?? "list";
+  const client = session(flags).client;
+  if (sub === "list") {
+    for (const parent of (await client.listParents()).parents) io.log(JSON.stringify(parent));
+    return 0;
+  }
+  const name = flags.rest[1];
+  if (name == null) throw new Error(`usage: vault parents ${sub} NAME`);
+  if (sub === "set") {
+    if (flags.provider == null) throw new Error("usage: vault parents set NAME --provider PROVIDER [--config KEY=VALUE]");
+    const config: Record<string, string> = {};
+    for (const entry of flags.config) {
+      const match = /^([A-Za-z][A-Za-z0-9]*)=(.+)$/u.exec(entry);
+      if (match?.[1] == null || match[2] == null)
+        throw new Error(`invalid --config ${entry}; expected KEY=VALUE`);
+      config[match[1]] = match[2];
+    }
+    const value = await readSecretValue(undefined, process.stdin, process.stdout, "parent key: ");
+    await client.putParent(name, { provider: flags.provider, config, value });
+    io.log(`parent ${name} stored; its value is never shown again`);
+    return 0;
+  }
+  if (sub === "minted") {
+    for (const minted of (await client.listMinted(name, flags.limit ?? 100)).minted)
+      io.log(JSON.stringify(minted));
+    return 0;
+  }
+  if (sub === "revoke") {
+    requireYes(flags, `revoking every child key of parent ${name}`);
+    io.log(JSON.stringify(await client.revokeParent(name)));
+    return 0;
+  }
+  if (sub === "delete") {
+    requireYes(flags, `deleting parent ${name}`);
+    await client.deleteParent(name);
+    io.log(`deleted parent ${name}`);
+    return 0;
+  }
+  throw new Error(`unknown parents command: ${sub}`);
 }
 
 async function runMasterKeys(flags: Flags, io: { log: (value: string) => void }) {
@@ -676,12 +724,14 @@ function helpText(): string {
   vault orgs list|create NAME [--label LABEL] [--expires-in-days 90]   # platform operators
   vault projects list|create NAME|delete NAME --yes
   vault environments list|create NAME|delete NAME --yes
-  vault secrets list|get NAME|set NAME [--kind config|secret|sealed] [--random]
+  vault secrets list|get NAME|set NAME [--kind config|secret|sealed|minted] [--random]
   vault secrets delete NAME --yes
   vault secrets collect NAME [--kind secret|sealed] # browser entry; create only
   vault keys list [--include-revoked]
   vault keys create --type system --scope PROJECT/ENV [--permission read|readwrite|full]
   vault keys rotate PREFIX | revoke PREFIX --yes
+  vault parents list|set NAME --provider cloudflare --config accountId=ID   # value from hidden input
+  vault parents minted NAME [--limit N] | revoke NAME --yes | delete NAME --yes
   vault audit [--limit N] [--cursor CURSOR]
   vault master-keys status|prepare|retire FINGERPRINT --yes
   vault run -- CMD                          # injects every secret in project/env
@@ -695,6 +745,10 @@ continue only after stored. Cancelled/expired stops; unknown requires inspection
 See vault secrets collect --help. Existing interactive secrets set stays available.
 
 Share access with a scoped system key: vault keys create --type system --scope P/E.
+
+Parent keys: store one key per service with parents set. A minted secret's value is a
+JSON spec, {"parent": NAME, "ttlMinutes": 60, ...provider fields}; every export
+(vault run, use_secret) mints a fresh child key from the parent and records it.
 
 Secret values and login/bootstrap credentials are read from hidden input or stdin.
 VAULT_API_URL, VAULT_API_KEY, and VAULT_BOOTSTRAP_TOKEN are supported environment inputs.

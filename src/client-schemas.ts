@@ -18,3 +18,5 @@ export const auditRecordSchema = v.looseObject(wire.auditRecordSchema.entries);
 export const masterKeyWrapMetaSchema = v.looseObject(
   wire.masterKeyWrapMetaSchema.entries,
 );
+export const parentMetaSchema = v.looseObject(wire.parentMetaSchema.entries);
+export const mintedKeyMetaSchema = v.looseObject(wire.mintedKeyMetaSchema.entries);

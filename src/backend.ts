@@ -18,7 +18,14 @@
  * claim, unique names, the last-user-key guard, key rotation) report the
  * refused case as a value rather than an exception.
  */
-import type { AuditAction, KeyMode, KeyType, Permission, SecretKind } from "./types.ts";
+import type {
+  AuditAction,
+  KeyMode,
+  KeyType,
+  MintedKeyStatus,
+  Permission,
+  SecretKind,
+} from "./types.ts";
 
 /** The vault's own org: bootstrap, pre-org rows, and the platform operators. */
 export const DEFAULT_ORG = "default";
@@ -76,6 +83,34 @@ export type AuditRow = {
   status: string;
   createdAt: string;
 };
+
+export type ParentRow = {
+  id: string;
+  orgId: string;
+  nameHash: string;
+  nameEncrypted: string;
+  provider: string;
+  configEncrypted: string;
+  valueEncrypted: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MintedKeyRow = {
+  id: string;
+  orgId: string;
+  parentId: string;
+  providerKeyIdEncrypted: string | null;
+  keyPrefix: string;
+  labelEncrypted: string;
+  status: MintedKeyStatus;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+};
+
+/** Ledger statuses whose child key may still work at the provider. */
+export const LIVE_MINTED_STATUSES: readonly MintedKeyStatus[] = ["pending", "active", "unknown"];
 
 export type RevokeOutcome = "revoked" | "not_found" | "last_user_key";
 
@@ -146,6 +181,38 @@ export interface VaultBackend {
   upsertSecret(input: { secret: SecretRow }): Promise<void>;
   deleteSecret(input: { environmentId: string; keyHash: string }): Promise<boolean>;
   getSecretRow(input: { environmentId: string; keyHash: string }): Promise<SecretRow | null>;
+
+  /** Inserts the parent, or replaces its provider, config and value (keeping its id). */
+  upsertParent(input: { parent: ParentRow }): Promise<void>;
+  getParent(input: { orgId: string; nameHash: string }): Promise<ParentRow | null>;
+  getParentById(input: { id: string }): Promise<ParentRow | null>;
+  listParents(input: { orgId: string }): Promise<ParentRow[]>;
+  /**
+   * Deletes the parent with its finished ledger rows. Refuses (`live_children`)
+   * while any of its children may still work: revoke them first.
+   */
+  deleteParent(input: {
+    orgId: string;
+    nameHash: string;
+    now: string;
+  }): Promise<"deleted" | "not_found" | "live_children">;
+  /** Live children (see `LIVE_MINTED_STATUSES`) not yet past their expiry, per parent id. */
+  countLiveMinted(input: { orgId: string; now: string }): Promise<Map<string, number>>;
+
+  insertMinted(input: { minted: MintedKeyRow }): Promise<void>;
+  /** Moves a ledger row to a new status, recording the provider id when it is learned. */
+  updateMinted(input: {
+    id: string;
+    status: MintedKeyStatus;
+    providerKeyIdEncrypted?: string;
+    revokedAt?: string;
+  }): Promise<void>;
+  /** Newest first. */
+  listMinted(input: { parentId: string; limit: number }): Promise<MintedKeyRow[]>;
+  /** The parent's children that may still work, whatever their expiry. */
+  listLiveMinted(input: { parentId: string }): Promise<MintedKeyRow[]>;
+  /** Children of every org that may still work but are past expiry, oldest first. */
+  listDueMinted(input: { now: string; limit: number }): Promise<MintedKeyRow[]>;
 
   insertAudit(input: { event: AuditRow }): Promise<void>;
   /** Newest first by `(createdAt, id)`, strictly before the cursor when one is given. */

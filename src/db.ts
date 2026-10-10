@@ -19,7 +19,14 @@
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/database/}
  */
-import { DEFAULT_ORG, type KeyRow, type SecretRow, type VaultBackend } from "./backend.ts";
+import {
+  DEFAULT_ORG,
+  type KeyRow,
+  type MintedKeyRow,
+  type ParentRow,
+  type SecretRow,
+  type VaultBackend,
+} from "./backend.ts";
 import type { VaultCrypto } from "./crypto.ts";
 import { PolicyError } from "./policy.ts";
 import type {
@@ -27,7 +34,10 @@ import type {
   AuditAction,
   KeyMode,
   KeyType,
+  MintedKeyMeta,
+  MintedKeyStatus,
   Permission,
+  ParentMeta,
   Scope,
   SecretKind,
   SecretMeta,
@@ -335,6 +345,168 @@ export class VaultStore {
     return row == null ? null : this.decryptSecret(row);
   }
 
+  /** A parent's name is hashed apart from secret names, which live in another table. */
+  private parentNameHash(name: string): Promise<string> {
+    return this.vaultCrypto.lookupHash(`parent:${name}`);
+  }
+
+  /** Creates the parent, or replaces its provider, config and value. */
+  async setParent(input: {
+    name: string;
+    provider: string;
+    config: Record<string, string>;
+    value: string;
+  }): Promise<void> {
+    if (input.value.length === 0) throw new PolicyError(400, "parent value must not be empty");
+    const now = nowIso();
+    await this.backend.upsertParent({
+      parent: {
+        id: newId(),
+        orgId: this.orgId,
+        nameHash: await this.parentNameHash(input.name),
+        nameEncrypted: await this.vaultCrypto.encrypt(input.name),
+        provider: input.provider,
+        configEncrypted: await this.vaultCrypto.encrypt(JSON.stringify(input.config)),
+        valueEncrypted: await this.vaultCrypto.encrypt(input.value),
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+  }
+
+  /** The parent with its decrypted value. Only the minting path may call this. */
+  async getParent(name: string): Promise<Parent | null> {
+    const row = await this.backend.getParent({
+      orgId: this.orgId,
+      nameHash: await this.parentNameHash(name),
+    });
+    return row == null ? null : this.decryptParent(row);
+  }
+
+  async getParentById(id: string): Promise<Parent | null> {
+    const row = await this.backend.getParentById({ id });
+    return row == null || row.orgId !== this.orgId ? null : this.decryptParent(row);
+  }
+
+  private async decryptParent(row: ParentRow): Promise<Parent> {
+    // SAFETY: setParent encrypts the JSON of a validated string record.
+    const config = JSON.parse(await this.vaultCrypto.decrypt(row.configEncrypted)) as Record<
+      string,
+      string
+    >;
+    return {
+      id: row.id,
+      name: await this.vaultCrypto.decrypt(row.nameEncrypted),
+      provider: row.provider,
+      config,
+      value: await this.vaultCrypto.decrypt(row.valueEncrypted),
+    };
+  }
+
+  /** Names, providers and configs; never values. */
+  async listParents(): Promise<ParentMeta[]> {
+    const [rows, live] = await Promise.all([
+      this.backend.listParents({ orgId: this.orgId }),
+      this.backend.countLiveMinted({ orgId: this.orgId, now: nowIso() }),
+    ]);
+    const parents: ParentMeta[] = [];
+    for (const row of rows) {
+      const { name, provider, config } = await this.decryptParent(row);
+      parents.push({
+        name,
+        provider,
+        config,
+        activeChildren: live.get(row.id) ?? 0,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
+    }
+    return parents.sort(byName);
+  }
+
+  async deleteParent(name: string): Promise<void> {
+    const outcome = await this.backend.deleteParent({
+      orgId: this.orgId,
+      nameHash: await this.parentNameHash(name),
+      now: nowIso(),
+    });
+    if (outcome === "not_found") throw new PolicyError(404, "parent not found");
+    if (outcome === "live_children")
+      throw new PolicyError(409, "parent has child keys that may still work; revoke them first");
+  }
+
+  /** Writes the ledger row before the provider is called; returns its id. */
+  async recordMint(input: {
+    parentId: string;
+    keyPrefix: string;
+    label: string;
+    expiresAt: string;
+  }): Promise<string> {
+    const id = newId();
+    await this.backend.insertMinted({
+      minted: {
+        id,
+        orgId: this.orgId,
+        parentId: input.parentId,
+        providerKeyIdEncrypted: null,
+        keyPrefix: input.keyPrefix,
+        labelEncrypted: await this.vaultCrypto.encrypt(input.label),
+        status: "pending",
+        createdAt: nowIso(),
+        expiresAt: input.expiresAt,
+        revokedAt: null,
+      },
+    });
+    return id;
+  }
+
+  async updateMint(
+    id: string,
+    status: MintedKeyStatus,
+    providerKeyId?: string,
+  ): Promise<void> {
+    await this.backend.updateMinted({
+      id,
+      status,
+      providerKeyIdEncrypted:
+        providerKeyId == null ? undefined : await this.vaultCrypto.encrypt(providerKeyId),
+      revokedAt: status === "revoked" || status === "expired" ? nowIso() : undefined,
+    });
+  }
+
+  async listMinted(parentId: string, limit: number): Promise<MintedKeyMeta[]> {
+    const rows = await this.backend.listMinted({ parentId, limit: Math.max(1, Math.min(limit, 500)) });
+    return Promise.all(rows.map((row) => this.mintedMeta(row)));
+  }
+
+  /** The parent's children that may still work, with their provider ids. */
+  async listLiveMinted(parentId: string): Promise<LiveMint[]> {
+    const rows = await this.backend.listLiveMinted({ parentId });
+    return Promise.all(rows.map((row) => this.liveMint(row)));
+  }
+
+  async liveMint(row: MintedKeyRow): Promise<LiveMint> {
+    return {
+      ...(await this.mintedMeta(row)),
+      providerKeyId:
+        row.providerKeyIdEncrypted == null
+          ? null
+          : await this.vaultCrypto.decrypt(row.providerKeyIdEncrypted),
+    };
+  }
+
+  private async mintedMeta(row: MintedKeyRow): Promise<MintedKeyMeta> {
+    return {
+      id: row.id,
+      label: await this.vaultCrypto.decrypt(row.labelEncrypted),
+      keyPrefix: row.keyPrefix,
+      status: row.status,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+    };
+  }
+
   async audit(input: {
     keyPrefix: string;
     action: AuditAction;
@@ -423,6 +595,16 @@ export class VaultStore {
     };
   }
 }
+
+export type Parent = {
+  id: string;
+  name: string;
+  provider: string;
+  config: Record<string, string>;
+  value: string;
+};
+
+export type LiveMint = MintedKeyMeta & { providerKeyId: string | null };
 
 function byName(left: { name: string }, right: { name: string }): number {
   return left.name.localeCompare(right.name);

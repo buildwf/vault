@@ -9,6 +9,7 @@ import { generateMasterKey, type VaultCrypto } from "./crypto.ts";
 import { openMemoryD1 } from "./d1-sqlite.ts";
 import { VaultStore } from "./db.ts";
 import { VaultKeyring } from "./keyring.ts";
+import type { Minter } from "./parents/minter.ts";
 
 export const TEST_BOOTSTRAP_TOKEN = "test-bootstrap-token";
 
@@ -27,10 +28,11 @@ export async function openTestBackend(): Promise<VaultBackend> {
   return new D1Backend(openMemoryD1(migrationSql));
 }
 
-export async function createTestVault(): Promise<{
+export async function createTestVault(options: { minter?: Minter } = {}): Promise<{
   env: TestEnv;
   backend: VaultBackend;
   crypto: VaultCrypto;
+  keyring: VaultKeyring;
   store: VaultStore;
   app: ReturnType<typeof createApp>;
   masterKey: string;
@@ -43,10 +45,12 @@ export async function createTestVault(): Promise<{
     env,
     backend,
     crypto: keyring.crypto,
+    keyring,
     store: new VaultStore(backend, keyring.crypto),
     app: createApp(keyring, {
       bootstrapToken: TEST_BOOTSTRAP_TOKEN,
       inactiveMasterKey: generateMasterKey(),
+      minter: options.minter,
     }),
     masterKey,
   };
