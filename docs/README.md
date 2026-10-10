@@ -38,3 +38,4 @@ Two root keys in Cloudflare Secrets Store protect all data.
 - [Parent keys](parents.md)
 - [CLI reference](cli.md)
 - [Use the vault in an app](apps.md)
+- [Web UI](ui.md)

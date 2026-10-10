@@ -29,6 +29,7 @@ import * as v from "valibot";
 import { DEFAULT_ORG } from "./backend.ts";
 import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
+import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from "./ui/assets.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
 import { bearerFrom, randomApiKey, randomSecretValue } from "./keys.ts";
@@ -194,6 +195,23 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       activeMasterKeyFingerprint: keyring.activeFingerprint,
     });
   });
+
+  // The operator UI is static; it authenticates through the API like any client.
+  const uiAsset = (body: string, type: string) => () =>
+    new Response(body, {
+      headers: {
+        "Content-Type": type,
+        "Content-Security-Policy": UI_CSP,
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-cache",
+      },
+    });
+  app.get("/ui", uiAsset(UI_HTML, "text/html; charset=utf-8"));
+  app.get("/ui/", (c) => c.redirect("/ui"));
+  app.get("/ui/app.css", uiAsset(UI_CSS, "text/css; charset=utf-8"));
+  app.get("/ui/app.js", uiAsset(UI_JS, "text/javascript; charset=utf-8"));
 
   app.use("/v1/*", async (c, next) => {
     if (c.req.path === "/v1/bootstrap" && c.req.method === "POST") {
