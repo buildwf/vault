@@ -291,6 +291,35 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     return c.json({ key: generated.plaintext, prefix: generated.prefix, expiresAt }, 201);
   });
 
+  // Everything the UI's home page explains: who the caller is, and every
+  // project, environment and secret name it can see. Never a value.
+  app.get("/v1/overview", async (c) => {
+    const key = c.get("key");
+    const store = c.get("store");
+    const org =
+      store.orgId === DEFAULT_ORG ? null : ((await keyring.backend.getOrg({ id: store.orgId }))?.name ?? null);
+    const projects = [];
+    for (const name of await store.listProjects()) {
+      const project = await store.getProject(name);
+      if (project == null) continue;
+      const environments = [];
+      for (const env of await store.listEnvironments(project.id)) {
+        if (!inScope(key, name, env)) continue;
+        const { environmentId } = await store.requireEnvironment(name, env);
+        environments.push({ name: env, secrets: await store.listSecretMeta(environmentId) });
+      }
+      if (isOperator(key) || environments.length > 0) projects.push({ name, environments });
+    }
+    await store.audit({ keyPrefix: key.keyPrefix, action: "list", status: "ok" });
+    return c.json({
+      org,
+      platform: isPlatformOperator(key),
+      key: publicKeyMeta(key),
+      projects,
+      parents: isOperator(key) ? await store.listParents() : null,
+    });
+  });
+
   app.get("/v1/orgs", manageOrgs, async (c) => {
     return c.json({ orgs: await c.get("store").listOrgs() });
   });
@@ -745,6 +774,15 @@ async function attachKey(
   c.set("store", store);
   await store.touchKey(key.keyPrefix);
   c.set("key", key);
+}
+
+function inScope(key: ApiKeyRecord, project: string, env: string): boolean {
+  try {
+    assertScope(key, project, env);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function expiresAtFromDays(days: number): string {

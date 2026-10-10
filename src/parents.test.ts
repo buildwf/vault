@@ -100,6 +100,44 @@ async function setup(options: { status?: number; now?: () => Date } = {}) {
   return { ...vault, cloudflare, operator, agent, call };
 }
 
+describe("overview", () => {
+  test("names minted secrets' parents and never returns a value", async () => {
+    const { call, operator, agent } = await setup();
+    await call(operator, "/v1/projects/web/environments", "POST", { name: "prod" });
+    const listed = await call(operator, "/v1/projects/web/environments/dev/secrets");
+    expect(z.unknown().parse(await listed.json())).toEqual({
+      secrets: [
+        { name: "CLOUDFLARE_API_TOKEN", kind: "minted", parent: "cloudflare" },
+        { name: "PLAIN", kind: "secret" },
+      ],
+    });
+
+    const asOperator = await call(operator, "/v1/overview");
+    expect(asOperator.status).toBe(200);
+    const text = await asOperator.text();
+    expect(text).not.toContain("plain-value");
+    expect(text).not.toContain(PARENT_TOKEN);
+    const overview = z
+      .looseObject({
+        platform: z.boolean(),
+        projects: z.array(z.looseObject({ name: z.string(), environments: z.array(z.looseObject({ name: z.string() })) })),
+        parents: z.array(z.looseObject({ name: z.string() })),
+      })
+      .parse(JSON.parse(text));
+    expect(overview.platform).toBe(true);
+    expect(overview.projects[0]?.environments.map((e) => e.name)).toEqual(["dev", "prod"]);
+    expect(overview.parents.map((p) => p.name)).toEqual(["cloudflare"]);
+
+    const asAgent = z
+      .looseObject({
+        projects: z.array(z.looseObject({ environments: z.array(z.looseObject({ name: z.string() })) })),
+        parents: z.null(),
+      })
+      .parse(await (await call(agent.key, "/v1/overview")).json());
+    expect(asAgent.projects[0]?.environments.map((e) => e.name)).toEqual(["dev"]);
+  });
+});
+
 describe("parent keys", () => {
   test("export mints a child from the parent; the parent value never comes back", async () => {
     const { call, cloudflare, operator, agent, backend } = await setup();

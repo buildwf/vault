@@ -71,7 +71,12 @@ export const apiKeyMetaSchema = v.object({
   revokedAt: v.nullable(v.string()),
 });
 
-export const secretMetaSchema = v.object({ name: v.string(), kind: secretKindSchema });
+export const secretMetaSchema = v.object({
+  name: v.string(),
+  kind: secretKindSchema,
+  /** Minted secrets only: the parent key each read mints a child key from. */
+  parent: v.optional(v.string()),
+});
 
 export const secretRecordSchema = v.object({
   name: v.string(),
