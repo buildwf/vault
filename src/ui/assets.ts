@@ -148,6 +148,9 @@ pre.once { font: 14px/1.6 var(--mono); background: var(--codeBg); border-radius:
 dl { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px var(--group-gap); margin: 0 0 var(--block-gap); }
 dt { font: var(--small)/1.6 var(--mono); color: var(--muted); }
 dd { font: 15px/1.6 var(--mono); margin: 0; overflow-wrap: anywhere; }
+dl.glossary dd { font: var(--body)/1.6 var(--sans); max-width: var(--prose-width); }
+dl.glossary dt { padding-top: 3px; }
+.buttons { display: flex; flex-wrap: wrap; gap: var(--intro-gap); }
 @media (max-width: 640px) {
   :root { --title: 38px; --section: 24px; --page-inline: 16px; --section-top: 48px; }
   .hide-narrow { display: none; }
@@ -161,7 +164,7 @@ export const UI_JS = String.raw`
 var KEY = "vault.key";
 var main = document.getElementById("main");
 var nav = document.getElementById("nav");
-var state = { platform: null };
+var state = { overview: null };
 
 function storedKey() {
   try { return sessionStorage.getItem(KEY); } catch (e) { return null; }
@@ -302,39 +305,114 @@ function onceKey(title, key, note) {
   ];
 }
 
+/* ---------- words ---------- */
+
+var KINDS = {
+  config: ["config", "A plain setting, like a URL. Stored encrypted, and anyone with access can read it."],
+  secret: ["secret", "A credential, like a database password. Apps and agents with access read it at runtime."],
+  sealed: ["sealed", "Only injected into a running process by vault run. A get never returns it."],
+  minted: ["minted", "Holds no key. Each read makes a fresh short-lived key from a parent key."],
+};
+
+var STATUSES = {
+  active: "live at the provider until it expires",
+  expired: "past its lifetime; dead at the provider",
+  revoked: "killed at the provider",
+  pending: "being made; the provider has not answered yet",
+  unknown: "the provider's answer was lost; it may be live, so revoke treats it as live",
+  failed: "the provider refused it; it never worked",
+};
+
+var ACTIONS = {
+  audit_list: "read the audit log",
+  bootstrap: "bootstrapped the vault",
+  broker: "used a secret through the broker",
+  environment_create: "created an environment",
+  environment_delete: "deleted an environment",
+  get: "read secret values",
+  inject: "loaded secrets into a process",
+  key_create: "created a vault key",
+  key_revoke: "revoked a vault key",
+  key_rotate: "rotated a vault key",
+  list: "listed secret names",
+  master_key_prepare: "prepared a root key",
+  master_key_retire: "retired a root key",
+  mint: "minted a child key",
+  mint_revoke: "revoked minted keys",
+  org_create: "created an org",
+  project_create: "created a project",
+  project_delete: "deleted a project",
+  parent_delete: "deleted a parent key",
+  parent_set: "set a parent key",
+  secret_delete: "deleted a secret",
+  set: "wrote a secret",
+  ui_signin: "signed in to this web UI",
+};
+
+function access(k) {
+  if (k.type === "user") return "operator: manages everything in this org";
+  var verb = k.permission === "read" ? "reads " : "reads and writes ";
+  return verb + (k.scopes || []).map(function (s) { return s.project + "/" + s.env; }).join(", ");
+}
+
+function plural(n, word) { return group(n) + " " + word + (n === 1 ? "" : "s"); }
+
+function kindCounts(secrets) {
+  var counts = {};
+  secrets.forEach(function (s) { counts[s.kind] = (counts[s.kind] || 0) + 1; });
+  return Object.keys(KINDS).filter(function (k) { return counts[k]; }).map(function (k) { return counts[k] + " " + k; }).join(", ") || "empty";
+}
+
+function mintedFrom(parent) {
+  var uses = [];
+  (state.overview.projects || []).forEach(function (p) {
+    p.environments.forEach(function (e) {
+      e.secrets.forEach(function (s) { if (s.kind === "minted" && s.parent === parent) uses.push([p.name, e.name, s.name]); });
+    });
+  });
+  return uses;
+}
+
+function envLink(project, env, text) {
+  return h("a", { href: "#/projects/" + enc(project) + "/" + enc(env), text: text || project + "/" + env });
+}
+
+function cmd(text) { return h("pre", { class: "once", text: text }); }
+
+function adding(title, intro, form) {
+  return [h("h2", { text: title }), intro ? h("p", { class: "muted", text: intro }) : null, form];
+}
+
 /* ---------- routes ---------- */
 
 function route() {
   var parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  return parts.length === 0 ? ["projects"] : parts;
+  return parts.length === 0 ? ["overview"] : parts;
 }
 
 function drawNav(section) {
-  var items = [["projects", "projects"], ["keys", "keys"], ["parents", "parents"], ["audit", "audit"]];
-  if (state.platform) items.push(["orgs", "orgs"]);
+  var items = [["overview", "overview"], ["projects", "projects"]];
+  if (state.overview.parents) items.push(["parents", "parent keys"]);
+  if (state.overview.key.type === "user") items.push(["keys", "vault keys"], ["audit", "audit"]);
+  if (state.overview.platform) items.push(["orgs", "orgs"]);
   fill(nav,
     items.map(function (item) {
       return h("a", { href: "#/" + item[0], "aria-current": section === item[0] ? "page" : null, text: item[1] });
     }),
     h("span", { class: "who" }, h("button", { type: "button", class: "link", text: "sign out", on: { click: function () {
-      setKey(null); state.platform = null; location.hash = "#/"; render();
+      setKey(null); state.overview = null; location.hash = "#/"; render();
     } } })),
   );
 }
 
 async function render(notice) {
   if (!storedKey()) { fill(nav); fill(main, signIn()); document.title = "Sign in · Vault"; return; }
-  if (state.platform == null) {
-    try { await api("GET", "/v1/orgs"); state.platform = true; }
-    catch (error) {
-      if (!storedKey()) return render();
-      state.platform = false;
-    }
-  }
   var parts = route();
-  drawNav(parts[0]);
-  var view = views[parts[0]] || notFound;
   try {
+    // One request says who you are and everything you can see; every page uses it.
+    state.overview = await api("GET", "/v1/overview");
+    drawNav(parts[0]);
+    var view = views[parts[0]] || notFound;
     var nodes = await view(parts.slice(1));
     fill(main, nodes);
     if (notice) {
@@ -362,7 +440,7 @@ function signIn() {
     h("form", { on: { submit: async function (event) {
       event.preventDefault();
       setKey(input.value.trim());
-      try { await api("GET", "/v1/projects"); input.value = ""; render(); }
+      try { await api("GET", "/v1/overview"); input.value = ""; render(); }
       catch (error) { setKey(null); status.replaceChildren(errorLine(error)); }
     } } },
       field("Vault key", input, "Kept in this tab only and cleared when you close it."),
@@ -371,114 +449,184 @@ function signIn() {
   ];
 }
 
-function notFound() { return [h("h1", { text: "Not found" }), h("p", null, h("a", { href: "#/", text: "Back to projects" }))]; }
+function notFound() { return [h("h1", { text: "Not found" }), h("p", null, h("a", { href: "#/", text: "Back to the overview" }))]; }
 
 var views = {
+  overview: async function () {
+    var ov = state.overview;
+    var k = ov.key;
+    var envCount = 0, secretCount = 0;
+    ov.projects.forEach(function (p) { envCount += p.environments.length; p.environments.forEach(function (e) { secretCount += e.secrets.length; }); });
+    var rows = [];
+    ov.projects.forEach(function (p) {
+      if (p.environments.length === 0) rows.push({ project: p.name, env: null, secrets: [] });
+      p.environments.forEach(function (e) { rows.push({ project: p.name, env: e.name, secrets: e.secrets }); });
+    });
+    return [
+      h("h1", { text: ov.platform ? "Platform" : (ov.org || "Vault") }),
+      h("p", { class: "lede", text: "This vault keeps the secrets your apps and AI agents run with: database URLs, API tokens, and the root credentials that new keys are made from. Values are encrypted, and this page never shows them. It shows what is stored, who can reach it, and where every minted key came from." }),
+      h("dl", null,
+        h("dt", { text: "signed in as" }), h("dd", { text: (k.label || "unlabelled key") + " (" + k.keyPrefix + ")" }),
+        h("dt", { text: "org" }), h("dd", { text: ov.platform ? "platform: the vault's own org" : dash(ov.org) }),
+        h("dt", { text: "access" }), h("dd", { text: access(k) }),
+        h("dt", { text: "this key expires" }), h("dd", { text: when(k.expiresAt) })),
+      ov.platform ? [
+        h("h2", { text: "You are in the platform org" }),
+        h("p", null, "The platform org runs the vault itself. It creates orgs on ", h("a", { href: "#/orgs", text: "orgs" }), " and holds the root keys, but it cannot see inside any org: each org's secrets are encrypted with that org's own key. To see an org's projects and secrets, run ", h("code", { text: "vault ui" }), " with that org's login."),
+      ] : null,
+      h("h2", { text: "What is stored" }),
+      rows.length === 0
+        ? h("p", { class: "muted" }, ov.platform ? "The platform org has no projects of its own." : "Nothing yet. Create a project on ", ov.platform ? null : h("a", { href: "#/projects", text: "projects" }), ov.platform ? null : ", then add an environment and its secrets.")
+        : [
+          h("p", { text: plural(ov.projects.length, "project") + ", " + plural(envCount, "environment") + ", " + plural(secretCount, "secret") + "." }),
+          table([
+            { label: "Project", mono: true, render: function (r) { return h("a", { href: "#/projects/" + enc(r.project), text: r.project }); } },
+            { label: "Environment", mono: true, render: function (r) { return r.env ? envLink(r.project, r.env, r.env) : "—"; } },
+            { label: "Secrets", num: true, render: function (r) { return r.secrets.length; } },
+            { label: "Kinds", mono: true, narrow: true, render: function (r) { return r.env ? kindCounts(r.secrets) : "no environments"; } },
+          ], rows, ""),
+        ],
+      ov.parents && ov.parents.length > 0 ? [
+        h("h2", { text: "Parent keys" }),
+        h("p", { text: "Root credentials the vault makes short-lived keys from. Apps never see these." }),
+        table([
+          { label: "Parent", mono: true, render: function (p) { return h("a", { href: "#/parents/" + enc(p.name), text: p.name }); } },
+          { label: "Service", mono: true, render: function (p) { return p.provider; } },
+          { label: "Used by", mono: true, render: function (p) {
+            var uses = mintedFrom(p.name);
+            return uses.length === 0 ? "no secrets yet" : uses.map(function (u) { return u[0] + "/" + u[1] + " " + u[2]; }).join(", ");
+          } },
+          { label: "Live keys", num: true, render: function (p) { return p.activeChildren; } },
+        ], ov.parents, ""),
+      ] : null,
+      h("h2", { text: "How it fits together" }),
+      h("dl", { class: "glossary" },
+        h("dt", { text: "org" }), h("dd", { text: "One customer or team. Each org has its own encryption key and its own operators, and cannot see other orgs." }),
+        h("dt", { text: "project" }), h("dd", { text: "One app or service, like manyave-management." }),
+        h("dt", { text: "environment" }), h("dd", { text: "The secrets for one stage of a project, like dev or prod. An app reads exactly one environment." }),
+        h("dt", { text: "secret" }), h("dd", { text: "A named value, like DATABASE_URL. Its kind (config, secret, sealed or minted) says who can read it back." }),
+        h("dt", { text: "parent key" }), h("dd", { text: "One powerful credential per service, like a Cloudflare account token or a GitHub App. It never leaves the vault." }),
+        h("dt", { text: "minted key" }), h("dd", { text: "A short-lived key the vault makes from a parent each time an app reads a minted secret. Every one is logged, so you can see who got which key and kill them all at once." }),
+        h("dt", { text: "vault key" }), h("dd", { text: "How a person, app or agent talks to the vault. Operator keys manage the org; scoped keys read one environment." })),
+      h("h2", { text: "From a terminal" }),
+      h("p", { text: "Run a command with an environment's secrets as variables:" }),
+      cmd("vault run --project PROJECT --env ENV -- your-command"),
+    ];
+  },
+
   projects: async function (rest) {
     if (rest.length === 1) return projectView(rest[0]);
     if (rest.length === 2) return envView(rest[0], rest[1]);
-    var data = await api("GET", "/v1/projects");
+    var ov = state.overview;
+    var operator = ov.key.type === "user";
     return [
       h("h1", { text: "Projects" }),
+      h("p", { class: "lede", text: "A project is one app or service. Each has environments, like dev and prod, and each environment holds the secrets that app runs with." }),
       table([
-        { label: "Name", mono: true, render: function (p) { return h("a", { href: "#/projects/" + enc(p) , text: p }); } },
-        { label: "", actions: true, render: function (p) {
-          return dangerButton("delete", "Delete project " + p + " with all its environments and secrets?", function () { return api("DELETE", "/v1/projects/" + enc(p)); });
+        { label: "Project", mono: true, render: function (p) { return h("a", { href: "#/projects/" + enc(p.name), text: p.name }); } },
+        { label: "Environments", mono: true, render: function (p) {
+          if (p.environments.length === 0) return "none yet";
+          return p.environments.map(function (e, i) { return [i ? ", " : "", envLink(p.name, e.name, e.name + " (" + e.secrets.length + ")")]; });
         } },
-      ], data.projects, "No projects yet."),
-      h("h2", { text: "New project" }),
-      actionForm([field("Name", textInput("project-name", { required: true, maxlength: 120 }))], "Create project", async function (form) {
-        var name = val(form, "project-name");
-        await api("POST", "/v1/projects", { name: name });
-        location.hash = "#/projects/" + enc(name.toLowerCase());
-      }),
+        { label: "", actions: true, render: function (p) {
+          if (!operator) return "";
+          return dangerButton("delete", "Delete project " + p.name + " with all its environments and secrets?", function () { return api("DELETE", "/v1/projects/" + enc(p.name)); });
+        } },
+      ], ov.projects, ov.platform ? "The platform org has no projects. Orgs keep their projects to themselves." : "No projects yet."),
+      operator ? adding("New project", "Name it after the app, like manyave-management.",
+        actionForm([field("Name", textInput("project-name", { required: true, maxlength: 120 }))], "Create project", async function (form) {
+          var name = val(form, "project-name");
+          await api("POST", "/v1/projects", { name: name });
+          location.hash = "#/projects/" + enc(name.toLowerCase());
+        })) : null,
     ];
   },
 
   keys: async function () {
     var data = await api("GET", "/v1/keys?includeRevoked=1");
+    var me = state.overview.key.keyPrefix;
     var keys = data.keys.slice().sort(function (a, b) { return Number(a.revoked) - Number(b.revoked); });
     return [
-      h("h1", { text: "Keys" }),
-      h("p", { class: "lede", text: "Vault keys for people and agents in this org. Only the prefix is stored in the clear." }),
+      h("h1", { text: "Vault keys" }),
+      h("p", { class: "lede", text: "Every person, app and agent that talks to this vault uses one of these. The vault stores only a hash of each key, so a lost key cannot be shown again; revoke it and make a new one." }),
       table([
-        { label: "Prefix", mono: true, render: function (k) { return k.keyPrefix; } },
-        { label: "Label", render: function (k) { return dash(k.label); } },
-        { label: "Type", mono: true, render: function (k) { return k.type + " · " + k.permission; } },
-        { label: "Scopes", mono: true, narrow: true, render: function (k) {
-          return k.scopes == null ? "all" : k.scopes.map(function (s) { return s.project + "/" + s.env; }).join(", ");
-        } },
+        { label: "Who", render: function (k) { return [dash(k.label), k.keyPrefix === me ? h("span", { class: "muted", text: " (you)" }) : null]; } },
+        { label: "Access", render: function (k) { return access(k); } },
+        { label: "Prefix", mono: true, narrow: true, render: function (k) { return k.keyPrefix; } },
         { label: "Last used", mono: true, narrow: true, render: function (k) { return when(k.lastUsedAt); } },
         { label: "Expires", mono: true, render: function (k) { return k.revoked ? "revoked " + when(k.revokedAt) : when(k.expiresAt); } },
         { label: "", actions: true, render: function (k) {
-          if (k.revoked) return "";
-          return dangerButton("revoke", "Revoke key " + k.keyPrefix + "? Anything using it stops working.", function () { return api("DELETE", "/v1/keys/" + enc(k.keyPrefix)); });
+          if (k.revoked || k.keyPrefix === me) return "";
+          return dangerButton("revoke", "Revoke " + (k.label || k.keyPrefix) + "? Anything using it stops working.", function () { return api("DELETE", "/v1/keys/" + enc(k.keyPrefix)); });
         } },
       ], keys, "No keys."),
-      h("h2", { text: "New key" }),
-      h("p", { class: "muted", text: "A scoped key reads one project environment, for an app or agent. An operator key manages the whole org." }),
-      actionForm([
-        h("div", { class: "row" },
-          field("Kind", select("key-type", ["system", "user"], "system"), "system is scoped; user is an operator"),
-          field("Permission", select("key-perm", ["read", "readwrite"], "read"), "ignored for operator keys")),
-        h("div", { class: "row" },
-          field("Project", textInput("key-project")),
-          field("Environment", textInput("key-env"))),
-        h("div", { class: "row" },
-          field("Label", textInput("key-label", { maxlength: 120 })),
-          field("Expires in days", h("input", { id: "key-days", type: "number", min: 1, max: 365, value: 90 }))),
-      ], "Create key", async function (form) {
-        var type = val(form, "key-type");
-        var body = { type: type, expiresInDays: Number(val(form, "key-days")) || 90 };
-        var label = val(form, "key-label");
-        if (label) body.label = label;
-        if (type === "system") {
-          body.permission = val(form, "key-perm");
-          body.scopes = [{ project: val(form, "key-project"), env: val(form, "key-env") }];
-        }
-        var created = await api("POST", "/v1/keys", body);
-        return onceKey("New key " + created.prefix, created.key);
-      }),
+      h("p", { class: "muted", text: "Keys labelled \"web ui\" are this page's own sessions, made by vault ui. They expire within 12 hours." }),
+      adding("Give an app or agent access", "A scoped key reads one environment and nothing else. Hand it to the app as VAULT_API_KEY. An operator key manages the whole org; give those only to people.",
+        actionForm([
+          h("div", { class: "row" },
+            field("Kind", select("key-type", ["system", "user"], "system"), "system: scoped, for apps and agents. user: an operator."),
+            field("Permission", select("key-perm", ["read", "readwrite"], "read"), "Scoped keys only.")),
+          h("div", { class: "row" },
+            field("Project", textInput("key-project")),
+            field("Environment", textInput("key-env"))),
+          h("div", { class: "row" },
+            field("Label", textInput("key-label", { maxlength: 120 }), "Who holds it, like \"web prod\" or \"Zack's laptop\"."),
+            field("Expires in days", h("input", { id: "key-days", type: "number", min: 1, max: 365, value: 90 }))),
+        ], "Create key", async function (form) {
+          var type = val(form, "key-type");
+          var body = { type: type, expiresInDays: Number(val(form, "key-days")) || 90 };
+          var label = val(form, "key-label");
+          if (label) body.label = label;
+          if (type === "system") {
+            body.permission = val(form, "key-perm");
+            body.scopes = [{ project: val(form, "key-project"), env: val(form, "key-env") }];
+          }
+          var created = await api("POST", "/v1/keys", body);
+          return onceKey("New key " + created.prefix, created.key);
+        })),
     ];
   },
 
   parents: async function (rest) {
     if (rest.length === 1) return parentView(rest[0]);
-    var data = await api("GET", "/v1/parents");
+    var parents = state.overview.parents || [];
     return [
       h("h1", { text: "Parent keys" }),
-      h("p", { class: "lede", text: "One root credential per service. Apps and agents get short-lived child keys minted from it and never see the parent." }),
+      h("p", { class: "lede", text: "A parent key is one powerful credential for one service, like a Cloudflare account token or a GitHub App. It stays in the vault. When an app reads a minted secret, the vault uses the parent to make a fresh key that expires on its own, and logs it here. So there is one real credential to rotate, and you can see and kill every key made from it." }),
       table([
-        { label: "Name", mono: true, render: function (p) { return h("a", { href: "#/parents/" + enc(p.name), text: p.name }); } },
-        { label: "Provider", mono: true, render: function (p) { return p.provider; } },
-        { label: "Config", mono: true, narrow: true, render: function (p) {
-          return Object.keys(p.config).map(function (k) { return k + "=" + p.config[k]; }).join(" ") || "—";
+        { label: "Parent", mono: true, render: function (p) { return h("a", { href: "#/parents/" + enc(p.name), text: p.name }); } },
+        { label: "Service", mono: true, render: function (p) { return p.provider; } },
+        { label: "Used by", mono: true, render: function (p) {
+          var uses = mintedFrom(p.name);
+          if (uses.length === 0) return "no secrets yet";
+          return uses.map(function (u, i) { return [i ? ", " : "", envLink(u[0], u[1], u[0] + "/" + u[1] + " " + u[2])]; });
         } },
-        { label: "Live children", num: true, render: function (p) { return p.activeChildren; } },
+        { label: "Live keys", num: true, render: function (p) { return p.activeChildren; } },
         { label: "Updated", mono: true, narrow: true, render: function (p) { return when(p.updatedAt); } },
-      ], data.parents, "No parent keys yet."),
-      h("h2", { text: "Set a parent key" }),
-      h("p", { class: "muted", text: "Adds a parent or replaces the stored credential of an existing one. The value is write-only." }),
-      actionForm([
-        h("div", { class: "row" },
-          field("Name", textInput("parent-name", { required: true, pattern: "[a-z0-9][a-z0-9-]*" })),
-          field("Provider", select("parent-provider", ["cloudflare", "github"], "cloudflare"))),
-        field("Config", h("textarea", { id: "parent-config", spellcheck: "false" }), "One key=value per line, for example accountId=… for cloudflare or appId=… and installationId=… for github."),
-        field("Credential", h("textarea", { id: "parent-value", class: "masked", spellcheck: "false", autocomplete: "off", required: true }), "An API token, or a GitHub App private key (PEM). Encrypted on save. Nobody can read it back."),
-      ], "Save parent key", async function (form) {
-        var config = {};
-        val(form, "parent-config").split("\n").forEach(function (line) {
-          var i = line.indexOf("=");
-          if (i > 0) config[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-        });
-        var name = val(form, "parent-name");
-        await api("PUT", "/v1/parents/" + enc(name), { provider: val(form, "parent-provider"), config: config, value: form.querySelector("#parent-value").value });
-        location.hash = "#/parents/" + enc(name);
-      }),
+      ], parents, "No parent keys yet. Add one below, then make a minted secret that names it."),
+      adding("Add or replace a parent key", "Saving over an existing name replaces its credential and keeps its history. The credential is write-only.",
+        actionForm([
+          h("div", { class: "row" },
+            field("Name", textInput("parent-name", { required: true, pattern: "[a-z0-9][a-z0-9-]*" }), "Lowercase, like cloudflare."),
+            field("Service", select("parent-provider", ["cloudflare", "github"], "cloudflare"))),
+          field("Config", h("textarea", { id: "parent-config", spellcheck: "false" }), "One key=value per line: accountId=… for cloudflare, or appId=… and installationId=… for github."),
+          field("Credential", h("textarea", { id: "parent-value", class: "masked", spellcheck: "false", autocomplete: "off", required: true }), "A Cloudflare API token that can create tokens, or a GitHub App private key (PEM). Nobody can read it back."),
+        ], "Save parent key", async function (form) {
+          var config = {};
+          val(form, "parent-config").split("\n").forEach(function (line) {
+            var i = line.indexOf("=");
+            if (i > 0) config[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+          });
+          var name = val(form, "parent-name");
+          await api("PUT", "/v1/parents/" + enc(name), { provider: val(form, "parent-provider"), config: config, value: form.querySelector("#parent-value").value });
+          location.hash = "#/parents/" + enc(name);
+        })),
     ];
   },
 
   audit: async function () {
+    var keys = {};
+    try { (await api("GET", "/v1/keys?includeRevoked=1")).keys.forEach(function (k) { keys[k.keyPrefix] = k.label; }); } catch (e) {}
     var events = [];
     var cursor = null;
     var body = h("div");
@@ -488,37 +636,37 @@ var views = {
       cursor = data.nextCursor;
       fill(body,
         table([
-          { label: "When", mono: true, render: function (e) { return when(e.createdAt); } },
-          { label: "Action", mono: true, render: function (e) { return e.action; } },
-          { label: "Status", mono: true, render: function (e) { return e.status; } },
-          { label: "Secret", mono: true, render: function (e) { return dash(e.secretName); } },
-          { label: "Key", mono: true, narrow: true, render: function (e) { return e.keyPrefix; } },
-        ], events, "No events."),
-        cursor ? h("button", { type: "button", class: "link", text: "Load more", on: { click: function (ev) { ev.target.disabled = true; more(); } } }) : null,
+          { label: "When (UTC)", mono: true, render: function (e) { return when(e.createdAt); } },
+          { label: "Who", render: function (e) { return keys[e.keyPrefix] || e.keyPrefix; } },
+          { label: "Did", render: function (e) { return ACTIONS[e.action] || e.action; } },
+          { label: "On", mono: true, render: function (e) { return dash(e.secretName); } },
+          { label: "Result", mono: true, render: function (e) { return e.status; } },
+        ], events, "Nothing has happened yet."),
+        cursor ? h("button", { type: "button", class: "link", text: "Load older", on: { click: function (ev) { ev.target.disabled = true; more(); } } }) : null,
       );
     }
     await more();
-    return [h("h1", { text: "Audit" }), h("p", { class: "lede", text: "Every read and change in this org, newest first. Times are UTC." }), body];
+    return [h("h1", { text: "Audit" }), h("p", { class: "lede", text: "Every read and change in this org, newest first, with the key that did it. Rows are written in the same step as the change, so nothing happens without a trace." }), body];
   },
 
   orgs: async function () {
     var data = await api("GET", "/v1/orgs");
     return [
       h("h1", { text: "Orgs" }),
-      h("p", { class: "lede", text: "Each org has its own encryption key and operators. The platform org cannot see their projects." }),
-      table([{ label: "Name", mono: true, render: function (o) { return o; } }], data.orgs, "No orgs."),
-      h("h2", { text: "New org" }),
-      actionForm([
-        h("div", { class: "row" },
-          field("Name", textInput("org-name", { required: true, pattern: "[a-z0-9][a-z0-9-]*" })),
-          field("Operator label", textInput("org-label", { maxlength: 120 }))),
-      ], "Create org", async function (form) {
-        var body = { name: val(form, "org-name") };
-        var label = val(form, "org-label");
-        if (label) body.label = label;
-        var created = await api("POST", "/v1/orgs", body);
-        return onceKey("Operator key for " + created.name, created.key, "This is the first operator key of the new org. Copy it now. The vault does not show it again.");
-      }),
+      h("p", { class: "lede", text: "Each org is a separate customer or team in this vault. It gets its own encryption key and its own operators. The platform org can create orgs but cannot read anything inside them." }),
+      table([{ label: "Org", mono: true, render: function (o) { return o; } }], data.orgs, "No orgs yet."),
+      adding("New org", "Creates the org and its first operator key. Give that key to the org's owner; they log in with vault login and manage everything else.",
+        actionForm([
+          h("div", { class: "row" },
+            field("Name", textInput("org-name", { required: true, pattern: "[a-z0-9][a-z0-9-]*" }), "Lowercase, like manyave."),
+            field("Operator label", textInput("org-label", { maxlength: 120 }))),
+        ], "Create org", async function (form) {
+          var body = { name: val(form, "org-name") };
+          var label = val(form, "org-label");
+          if (label) body.label = label;
+          var created = await api("POST", "/v1/orgs", body);
+          return onceKey("Operator key for " + created.name, created.key, "This is the first operator key of the new org. Copy it now. The vault does not show it again.");
+        })),
     ];
   },
 };
@@ -533,94 +681,138 @@ function crumbs() {
   return h("div", { class: "crumbs" }, nodes);
 }
 
-async function projectView(project) {
-  var data = await api("GET", "/v1/projects/" + enc(project) + "/environments");
+function findProject(name) {
+  return state.overview.projects.find(function (p) { return p.name === name; });
+}
+
+async function projectView(name) {
+  var project = findProject(name);
+  if (!project) return notFound();
+  var operator = state.overview.key.type === "user";
   return [
-    crumbs(["projects", "#/projects"], [project]),
-    h("h1", { text: project }),
+    crumbs(["projects", "#/projects"], [name]),
+    h("h1", { text: name }),
+    h("p", { class: "lede", text: "Each environment is a separate set of secrets for this app, like dev and prod. An app gets a key for one environment and sees only that." }),
     table([
-      { label: "Environment", mono: true, render: function (e) { return h("a", { href: "#/projects/" + enc(project) + "/" + enc(e), text: e }); } },
+      { label: "Environment", mono: true, render: function (e) { return envLink(name, e.name, e.name); } },
+      { label: "Secrets", num: true, render: function (e) { return e.secrets.length; } },
+      { label: "Kinds", mono: true, render: function (e) { return kindCounts(e.secrets); } },
       { label: "", actions: true, render: function (e) {
-        return dangerButton("delete", "Delete environment " + project + "/" + e + " and all its secrets?", function () {
-          return api("DELETE", "/v1/projects/" + enc(project) + "/environments/" + enc(e));
+        if (!operator) return "";
+        return dangerButton("delete", "Delete environment " + name + "/" + e.name + " and all its secrets?", function () {
+          return api("DELETE", "/v1/projects/" + enc(name) + "/environments/" + enc(e.name));
         });
       } },
-    ], data.environments, "No environments yet."),
-    h("h2", { text: "New environment" }),
-    actionForm([field("Name", textInput("env-name", { required: true, maxlength: 120 }))], "Create environment", async function (form) {
-      var name = val(form, "env-name");
-      await api("POST", "/v1/projects/" + enc(project) + "/environments", { name: name });
-      location.hash = "#/projects/" + enc(project) + "/" + enc(name.toLowerCase());
-    }),
+    ], project.environments, "No environments yet. Most apps start with dev and prod."),
+    operator ? adding("New environment", null,
+      actionForm([field("Name", textInput("env-name", { required: true, maxlength: 120 }), "Like dev, staging or prod.")], "Create environment", async function (form) {
+        var env = val(form, "env-name");
+        await api("POST", "/v1/projects/" + enc(name) + "/environments", { name: env });
+        location.hash = "#/projects/" + enc(name) + "/" + enc(env.toLowerCase());
+      })) : null,
   ];
 }
 
-var KIND_HINTS = {
-  secret: "secret: apps and agents read the value; it is never shown here.",
-  config: "config: a non-secret setting, still stored encrypted.",
-  sealed: "sealed: only injected into processes, never returned by a get.",
-  minted: "minted: the value is a JSON spec naming a parent key; each read mints a fresh child key.",
-};
-
 async function envView(project, env) {
   var base = "/v1/projects/" + enc(project) + "/environments/" + enc(env) + "/secrets";
-  var data = await api("GET", base);
-  var secrets = data.secrets.slice().sort(function (a, b) { return a.name < b.name ? -1 : 1; });
+  var found = findProject(project);
+  var environment = found && found.environments.find(function (e) { return e.name === env; });
+  if (!environment) return notFound();
+  var secrets = environment.secrets;
+  var hasParents = state.overview.parents && state.overview.parents.length > 0;
   var valueInput = h("textarea", { id: "secret-value", spellcheck: "false", autocomplete: "off", class: "masked" });
   // Masked while typing; a minted spec is JSON, not a credential, so it shows.
   var kindSelect = select("secret-kind", ["secret", "config", "sealed", "minted"], "secret");
-  kindSelect.addEventListener("change", function () { valueInput.className = kindSelect.value === "minted" ? "" : "masked"; });
+  var kindHint = h("p", { class: "hint", text: KINDS.secret[1] });
+  kindSelect.addEventListener("change", function () {
+    valueInput.className = kindSelect.value === "minted" ? "" : "masked";
+    kindHint.textContent = KINDS[kindSelect.value][1] + (kindSelect.value === "minted" ? " The value is a JSON spec, like {\"parent\": \"cloudflare\", \"ttlMinutes\": 60, ...}." : "");
+  });
   var randomBox = h("input", { id: "secret-random", type: "checkbox", on: { change: function () { valueInput.disabled = randomBox.checked; } } });
   return [
     crumbs(["projects", "#/projects"], [project, "#/projects/" + enc(project)], [env]),
     h("h1", { text: project + " / " + env }),
-    h("p", { class: "lede", text: "Names and kinds only. Values are write-only here; apps and agents read them with a scoped key." }),
+    h("p", { class: "lede", text: plural(secrets.length, "secret") + " that " + project + " runs with in " + env + ". Values are encrypted and never shown here; apps and agents read them at runtime with a key for this environment." }),
     table([
       { label: "Name", mono: true, render: function (s) { return s.name; } },
       { label: "Kind", mono: true, render: function (s) { return s.kind; } },
+      { label: "What happens when an app reads it", render: function (s) {
+        if (s.kind === "minted") {
+          return s.parent
+            ? ["Gets a fresh key made from parent ", h("a", { href: "#/parents/" + enc(s.parent), text: s.parent }), ". See every key made on that page."]
+            : KINDS.minted[1];
+        }
+        return KINDS[s.kind][1];
+      } },
       { label: "", actions: true, render: function (s) {
         return dangerButton("delete", "Delete " + s.name + " from " + project + "/" + env + "?", function () {
           return api("PATCH", base, { delete: [s.name] });
         });
       } },
-    ], secrets, "No secrets yet."),
-    h("h2", { text: "Set a secret" }),
-    h("p", { class: "muted", text: "Adds a secret or replaces the value of one with the same name." }),
-    actionForm([
-      h("div", { class: "row" },
-        field("Name", textInput("secret-name", { required: true, pattern: "[A-Z_][A-Z0-9_]*", placeholder: "DATABASE_URL" })),
-        field("Kind", kindSelect)),
-      field("Value", valueInput, Object.keys(KIND_HINTS).map(function (k) { return KIND_HINTS[k]; }).join(" ")),
-      h("div", { class: "field" }, h("label", { class: "check", for: "secret-random" }, randomBox, "Generate a random value instead")),
-    ], "Save secret", async function (form) {
-      var item = { name: val(form, "secret-name"), kind: val(form, "secret-kind") };
-      if (randomBox.checked) item.random = true;
-      else item.value = valueInput.value;
-      await api("PATCH", base, { set: [item] });
-      return h("p", { class: "status", role: "status", text: "Saved " + item.name + "." });
-    }),
+    ], secrets, "No secrets yet. Add one below."),
+    h("h2", { text: "Use these secrets" }),
+    h("p", { text: "From a terminal or a deploy, run your command with every secret here as an environment variable:" }),
+    cmd("vault run --project " + project + " --env " + env + " -- your-command"),
+    state.overview.key.type === "user"
+      ? h("p", null, "To give an app or agent its own access, make a scoped key for " + project + "/" + env + " on ", h("a", { href: "#/keys", text: "vault keys" }), ".")
+      : null,
+    adding("Add or replace a secret", "Saving a name that exists replaces its value.",
+      actionForm([
+        h("div", { class: "row" },
+          field("Name", textInput("secret-name", { required: true, pattern: "[A-Z_][A-Z0-9_]*", placeholder: "DATABASE_URL" }), "Uppercase, as the app expects the variable."),
+          h("div", { class: "field" }, h("label", { for: "secret-kind", text: "Kind" }), kindSelect, kindHint)),
+        field("Value", valueInput, hasParents ? null : "Minted secrets need a parent key first; add one on parent keys."),
+        h("div", { class: "field" }, h("label", { class: "check", for: "secret-random" }, randomBox, "Generate a random value instead")),
+      ], "Save secret", async function (form) {
+        var item = { name: val(form, "secret-name"), kind: val(form, "secret-kind") };
+        if (randomBox.checked) item.random = true;
+        else item.value = valueInput.value;
+        await api("PATCH", base, { set: [item] });
+        return h("p", { class: "status", role: "status", text: "Saved " + item.name + "." });
+      })),
   ];
 }
 
 async function parentView(name) {
+  var parent = (state.overview.parents || []).find(function (p) { return p.name === name; });
+  if (!parent) return notFound();
   var data = await api("GET", "/v1/parents/" + enc(name) + "/minted");
+  var uses = mintedFrom(name);
+  var seen = {};
+  data.minted.forEach(function (m) { seen[m.status] = true; });
   return [
-    crumbs(["parents", "#/parents"], [name]),
+    crumbs(["parent keys", "#/parents"], [name]),
     h("h1", { text: name }),
-    h("p", { class: "lede", text: "Child keys minted from this parent, newest first. The keys themselves are never stored." }),
+    h("p", { class: "lede", text: "A " + parent.provider + " credential kept in the vault. Apps never see it; they get short-lived keys made from it, listed below." }),
+    h("dl", null,
+      h("dt", { text: "service" }), h("dd", { text: parent.provider }),
+      h("dt", { text: "config" }), h("dd", { text: Object.keys(parent.config).map(function (k) { return k + "=" + parent.config[k]; }).join(" ") || "—" }),
+      h("dt", { text: "credential" }), h("dd", { text: "stored encrypted; write-only" }),
+      h("dt", { text: "live keys now" }), h("dd", { text: group(parent.activeChildren) }),
+      h("dt", { text: "updated" }), h("dd", { text: when(parent.updatedAt) }),
+      h("dt", { text: "used by" }), h("dd", null, uses.length === 0 ? "no minted secrets yet" : uses.map(function (u, i) { return [i ? ", " : "", envLink(u[0], u[1], u[0] + "/" + u[1] + " " + u[2])]; }))),
+    h("h2", { text: "Keys made from " + name }),
+    h("p", { text: "Newest first. Each row is one key handed to an app or agent; the label says which secret it was read through. The key itself is never stored." }),
     table([
-      { label: "Label", mono: true, render: function (m) { return m.label; } },
-      { label: "Prefix", mono: true, narrow: true, render: function (m) { return dash(m.keyPrefix); } },
+      { label: "For", mono: true, render: function (m) {
+        var parts = m.label.split("/");
+        return parts.length === 3 ? envLink(parts[0], parts[1], m.label) : m.label;
+      } },
       { label: "Status", mono: true, render: function (m) { return m.status; } },
-      { label: "Minted", mono: true, render: function (m) { return when(m.createdAt); } },
+      { label: "Made", mono: true, render: function (m) { return when(m.createdAt); } },
       { label: "Expires", mono: true, narrow: true, render: function (m) { return m.revokedAt ? "revoked " + when(m.revokedAt) : when(m.expiresAt); } },
-    ], data.minted, "Nothing minted yet."),
-    h("p", null,
-      dangerButton("revoke all live children", "Revoke every live child key minted from " + name + " at the provider?", function () {
+      { label: "Provider id", mono: true, narrow: true, render: function (m) { return dash(m.keyPrefix); } },
+    ], data.minted, "No keys made yet. One appears here the first time an app reads a minted secret that names " + name + "."),
+    Object.keys(seen).length > 0 ? h("dl", null, Object.keys(STATUSES).filter(function (s) { return seen[s]; }).map(function (s) {
+      return [h("dt", { text: s }), h("dd", { text: STATUSES[s] })];
+    })) : null,
+    h("h2", { text: "If something leaks" }),
+    h("p", { text: "Revoke every live key made from this parent at the provider. Apps get a fresh key on their next read." }),
+    h("p", { class: "buttons" },
+      dangerButton("revoke all live keys", "Revoke every live key made from " + name + " at " + parent.provider + "?", function () {
         return api("POST", "/v1/parents/" + enc(name) + "/revoke");
       }),
-      "   ",
-      dangerButton("delete parent", "Delete parent key " + name + "? Minted secrets that name it stop working.", async function () {
+      dangerButton("delete this parent", "Delete parent key " + name + "? Minted secrets that name it stop working.", async function () {
         await api("DELETE", "/v1/parents/" + enc(name));
         location.hash = "#/parents";
       })),
@@ -645,7 +837,7 @@ async function start() {
       var data = await res.json();
       if (!res.ok) throw new Error(data && data.error ? data.error : "sign-in failed (" + res.status + ")");
       setKey(data.key);
-      state.platform = null;
+      state.overview = null;
     } catch (error) {
       setKey(null);
       fill(nav);

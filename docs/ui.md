@@ -28,17 +28,18 @@ A system key sees only the environments in its scopes.
 
 ## Pages
 
-| Page | You can |
-|---|---|
-| projects | Make and delete projects and environments. Set and delete secrets. |
-| keys | Make and revoke keys. |
-| parents | Set and delete parent keys. See and revoke minted child keys. |
-| audit | Read the audit log. |
-| orgs | Make orgs. Platform org only. |
+| Page | It shows | You can |
+|---|---|---|
+| overview | Who you are, all projects, environments and secret counts, parent keys and the secrets that use them, and what each term means. | Read only. |
+| projects | Each environment's secrets, with what happens when an app reads each one. A minted secret links to its parent key. | Make and delete projects and environments. Set and delete secrets. |
+| parent keys | Each parent, the secrets that use it, and every key minted from it, with its status. | Set and delete parent keys. Revoke minted keys. |
+| vault keys | Who has access, and to what. | Make and revoke keys. |
+| audit | Every read and change, by key label. | Read only. |
+| orgs | The orgs in the vault. Platform org only. | Make orgs. |
 
 ## Rules
 
-- The UI never shows a secret value or a parent key. It shows names and kinds only.
+- The UI never shows a secret value or a parent key. It shows names, kinds, and the parent name of a minted secret.
 - Value fields are write-only. The UI hides the text while you type it.
 - The UI shows a new vault key one time only, when you make it.
 - The UI uses the same `/v1` API as the CLI. The same permissions and audit apply.

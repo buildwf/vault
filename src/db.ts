@@ -269,10 +269,17 @@ export class VaultStore {
     const rows = await this.listSecretRows(environmentId);
     const meta: SecretMeta[] = [];
     for (const row of rows) {
-      meta.push({
+      const item: SecretMeta = {
         name: await this.vaultCrypto.decrypt(row.keyEncrypted),
         kind: row.kind,
-      });
+      };
+      // A minted value is a spec naming its parent, not a credential, so the
+      // parent's name is safe to list.
+      if (row.kind === "minted") {
+        const parent = mintedParent(await this.vaultCrypto.decrypt(row.valueEncrypted));
+        if (parent != null) item.parent = parent;
+      }
+      meta.push(item);
     }
     return meta.sort(byName);
   }
@@ -608,4 +615,16 @@ export type LiveMint = MintedKeyMeta & { providerKeyId: string | null };
 
 function byName(left: { name: string }, right: { name: string }): number {
   return left.name.localeCompare(right.name);
+}
+
+function mintedParent(spec: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(spec);
+    if (typeof parsed === "object" && parsed != null && "parent" in parsed) {
+      return typeof parsed.parent === "string" ? parsed.parent : null;
+    }
+  } catch {
+    // A spec is validated on write; an unreadable one just lists no parent.
+  }
+  return null;
 }
