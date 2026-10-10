@@ -14,7 +14,7 @@
     "deploy:dry-run": "cf deploy --mode production --dry-run",
     "install:cli": "bun run build:cli && bun scripts/install-cli.ts",
     "migrations:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000d1d1 --local --persist-to .wrangler/state",
-    "migrations:production": "cf d1 migrations apply $VAULT_D1_ID",
+    "migrations:production": "bun scripts/migrations-production.ts",
     "recovery:rehearse": "bun scripts/recovery-rehearsal.ts",
     "master-keys:prepare-rotation": "bun scripts/rotate-master-key.ts prepare --yes",
     "acceptance": "bun scripts/acceptance.ts",
