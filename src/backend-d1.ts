@@ -21,6 +21,7 @@ import {
   type RevokeOutcome,
   type ParentRow,
   type SecretRow,
+  type UiLinkRow,
   type VaultBackend,
   type WrapRow,
 } from "./backend.ts";
@@ -713,6 +714,32 @@ export class D1Backend implements VaultBackend {
       .bind(before)
       .run();
     return result.meta.changes ?? 0;
+  }
+
+  async insertUiLink({ link, now }: { link: UiLinkRow; now: string }): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM ui_links WHERE expires_at < ?").bind(now),
+      this.db
+        .prepare(
+          "INSERT INTO ui_links (code_hash, org_id, key_prefix, expires_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(link.codeHash, link.orgId, link.keyPrefix, link.expiresAt),
+    ]);
+  }
+
+  async takeUiLink({ codeHash }: { codeHash: string }): Promise<UiLinkRow | null> {
+    const row = await this.db
+      .prepare("DELETE FROM ui_links WHERE code_hash = ? RETURNING *")
+      .bind(codeHash)
+      .first<{ code_hash: string; org_id: string; key_prefix: string; expires_at: string }>();
+    return row == null
+      ? null
+      : {
+          codeHash: row.code_hash,
+          orgId: row.org_id,
+          keyPrefix: row.key_prefix,
+          expiresAt: row.expires_at,
+        };
   }
 
   private insertKeyStatement(key: KeyRow): D1PreparedStatement {

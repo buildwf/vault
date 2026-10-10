@@ -112,6 +112,14 @@ export type MintedKeyRow = {
 /** Ledger statuses whose child key may still work at the provider. */
 export const LIVE_MINTED_STATUSES: readonly MintedKeyStatus[] = ["pending", "active", "unknown"];
 
+/** A one-time web UI sign-in link, issued for the key `keyPrefix` in `orgId`. */
+export type UiLinkRow = {
+  codeHash: string;
+  orgId: string;
+  keyPrefix: string;
+  expiresAt: string;
+};
+
 export type RevokeOutcome = "revoked" | "not_found" | "last_user_key";
 
 export interface VaultBackend {
@@ -223,4 +231,9 @@ export interface VaultBackend {
   }): Promise<AuditRow[]>;
   /** Deletes audit rows of every org created before the cutoff; returns how many. */
   pruneAudit(input: { before: string }): Promise<number>;
+
+  /** Inserts the link and deletes links that expired before `now`. */
+  insertUiLink(input: { link: UiLinkRow; now: string }): Promise<void>;
+  /** Deletes the link and returns it, so a code works at most once; null if absent. */
+  takeUiLink(input: { codeHash: string }): Promise<UiLinkRow | null>;
 }

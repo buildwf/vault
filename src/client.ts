@@ -25,6 +25,7 @@ import type { KeyType, Permission, Scope, SecretKind } from "./types.ts";
 import { collectedSecretSchema, type CollectionTarget } from "./collection-contract.ts";
 
 const keyResponseSchema = v.looseObject({ key: v.string(), prefix: v.string() });
+const uiLinkResponseSchema = v.looseObject({ code: v.string(), expiresAt: v.string() });
 const okResponseSchema = v.looseObject({ ok: v.literal(true) });
 const errorResponseSchema = v.object({ error: v.string() });
 
@@ -248,6 +249,11 @@ export class VaultClient {
       okResponseSchema,
       { body },
     );
+  }
+
+  /** A one-time code that signs the web UI in as this key; see `vault ui`. */
+  createUiLink() {
+    return this.request("POST", "/v1/ui/links", uiLinkResponseSchema, { body: {} });
   }
 
   createKey(body: {

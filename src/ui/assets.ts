@@ -357,7 +357,8 @@ function signIn() {
   var status = h("div");
   return [
     h("h1", { text: "Vault" }),
-    h("p", { class: "lede", text: "Sign in with a vault key. Operator keys can manage everything in their org; other keys see what their scopes allow." }),
+    h("p", { class: "lede" }, "Run ", h("code", { text: "vault ui" }), " in a terminal where you are logged in. It opens this page signed in as you."),
+    h("p", { class: "muted", text: "Or paste a vault key. Operator keys manage everything in their org; other keys see what their scopes allow." }),
     h("form", { on: { submit: async function (event) {
       event.preventDefault();
       setKey(input.value.trim());
@@ -626,6 +627,36 @@ async function parentView(name) {
   ];
 }
 
-window.addEventListener("hashchange", function () { render(); });
-render();
+/**
+ * "vault ui" opens /ui#signin=CODE. The code works once: trade it for a session
+ * key, then drop it from the address bar and history before anything renders.
+ */
+async function start() {
+  var match = /^#signin=([0-9a-f]+)$/.exec(location.hash);
+  if (match) {
+    history.replaceState(null, "", location.pathname + "#/");
+    try {
+      var res = await fetch("/v1/ui/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: match[1] }),
+        cache: "no-store",
+      });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data && data.error ? data.error : "sign-in failed (" + res.status + ")");
+      setKey(data.key);
+      state.platform = null;
+    } catch (error) {
+      setKey(null);
+      fill(nav);
+      fill(main, signIn());
+      main.querySelector(".lede").after(errorLine(error));
+      window.addEventListener("hashchange", function () { render(); });
+      return;
+    }
+  }
+  window.addEventListener("hashchange", function () { render(); });
+  render();
+}
+start();
 `;

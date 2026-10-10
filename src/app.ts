@@ -111,6 +111,13 @@ const putParentSchema = v.strictObject({
   config: v.optional(v.record(v.string(), v.pipe(v.string(), v.maxLength(200))), {}),
   value: v.pipe(v.string(), v.minLength(1), v.maxLength(16384)),
 });
+const uiSessionSchema = v.strictObject({
+  code: v.pipe(v.string(), v.minLength(1), v.maxLength(200)),
+});
+/** A `vault ui` link works once, within this window. */
+const UI_LINK_TTL_MS = 2 * 60 * 1000;
+/** The longest a web UI session key lives; never past the key that made it. */
+const UI_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const auditCursorSchema = v.object({
   createdAt: v.string(),
   id: v.string(),
@@ -226,8 +233,62 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       await next();
       return;
     }
+    // The browser's half of `vault ui`: the one-time code is its credential.
+    if (c.req.path === "/v1/ui/session" && c.req.method === "POST") {
+      await next();
+      return;
+    }
     await attachKey(c, keyring);
     await next();
+  });
+
+  // `vault ui` asks for a one-time code for its own key, then opens the browser
+  // on /ui with the code in the fragment, which never reaches a server log.
+  app.post("/v1/ui/links", async (c) => {
+    const code = randomSecretValue();
+    const expiresAt = new Date(Date.now() + UI_LINK_TTL_MS).toISOString();
+    await keyring.backend.insertUiLink({
+      link: {
+        codeHash: await keyring.crypto.sha256(code),
+        orgId: c.get("store").orgId,
+        keyPrefix: c.get("key").keyPrefix,
+        expiresAt,
+      },
+      now: new Date().toISOString(),
+    });
+    return c.json({ code, expiresAt }, 201);
+  });
+
+  // The page trades the code for a session key with the same type, permission
+  // and scopes as the key that made the link, which expires within hours.
+  app.post("/v1/ui/session", async (c) => {
+    const body = await parseBody(uiSessionSchema, c.req);
+    const link = await keyring.backend.takeUiLink({
+      codeHash: await keyring.crypto.sha256(body.code),
+    });
+    if (link == null || Date.parse(link.expiresAt) <= Date.now()) {
+      throw new PolicyError(401, "sign-in link is used or expired; run vault ui again");
+    }
+    const store = new VaultStore(keyring.backend, await keyring.cryptoFor(link.orgId), link.orgId);
+    const parent = await store.findKeyByPrefix(link.keyPrefix);
+    if (parent == null) throw new PolicyError(401, "invalid API key");
+    assertActiveKey(parent);
+    const generated = randomApiKey(parent.type);
+    const expiresAt = new Date(
+      Math.min(Date.parse(parent.expiresAt), Date.now() + UI_SESSION_TTL_MS),
+    ).toISOString();
+    await store.insertKey({
+      plaintext: generated.plaintext,
+      prefix: generated.prefix,
+      type: parent.type,
+      permission: parent.permission,
+      mode: parent.mode,
+      label: `web ui (${parent.label ?? parent.keyPrefix})`,
+      scopes: parent.scopes,
+      expiresAt,
+    });
+    await store.audit({ keyPrefix: parent.keyPrefix, action: "ui_signin", status: "ok" });
+    return c.json({ key: generated.plaintext, prefix: generated.prefix, expiresAt }, 201);
   });
 
   app.get("/v1/orgs", manageOrgs, async (c) => {
