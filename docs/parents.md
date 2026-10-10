@@ -17,6 +17,9 @@ The provider also shows the label in the name of the child key.
 | Provider | Parent key | Child key | Config |
 |---|---|---|---|
 | `cloudflare` | Account API token with "Account API Tokens Write" | Account API token with the spec policies | `accountId` |
+| `github` | GitHub App private key (PEM) | Installation token with the spec permissions and repositories | `appId`, `installationId` |
+
+Each org stores its own parent keys. For GitHub, make a GitHub App in your own account or organization, install it, and give the vault its private key.
 
 ## Store a parent key
 
@@ -25,6 +28,13 @@ vault parents set cloudflare --provider cloudflare --config accountId=ACCOUNT_ID
 ```
 
 Type the parent key into the hidden prompt, or send it on stdin.
+Send a GitHub App private key on stdin, because it has more than one line:
+
+```sh
+vault parents set github --provider github --config appId=APP_ID --config installationId=INSTALLATION_ID < app.private-key.pem
+```
+
+The installation ID is the number at the end of the installation's settings URL.
 Only operators can store, list or delete parent keys.
 
 ## Make a minted secret
@@ -49,8 +59,21 @@ The value of a minted secret is a JSON spec, not a key:
 vault secrets set CLOUDFLARE_API_TOKEN --kind minted --project web --env dev < spec.json
 ```
 
+A GitHub spec has `permissions` and, if you want fewer repositories than the installation has, `repositories`:
+
+```json
+{
+  "parent": "github",
+  "ttlMinutes": 30,
+  "permissions": { "contents": "read", "pull_requests": "write" },
+  "repositories": ["api"]
+}
+```
+
 Only operators can set a minted secret.
 `ttlMinutes` is 1 to 10080. The default is 60.
+GitHub tokens stop after one hour, so for `github` the maximum is 60.
+GitHub can revoke a token only with the token itself. Thus the ledger keeps each GitHub child key, encrypted with the org key. The key stops working after one hour.
 
 `vault run` and the agent `use_secret` tool get a new child key each time.
 `vault secrets get` shows the spec, not a key.

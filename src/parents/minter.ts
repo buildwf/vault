@@ -24,6 +24,7 @@ import type { VaultBackend } from "../backend.ts";
 import { VaultStore, type Parent } from "../db.ts";
 import { PolicyError } from "../policy.ts";
 import { cloudflare } from "./cloudflare.ts";
+import { github } from "./github.ts";
 import { ProviderError, type ParentProvider, type Send } from "./provider.ts";
 
 export const PARENT_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/u;
@@ -31,7 +32,7 @@ const MAX_TTL_MINUTES = 10080;
 const DEFAULT_TTL_MINUTES = 60;
 
 const PROVIDERS: ReadonlyMap<string, ParentProvider> = new Map(
-  [cloudflare as ParentProvider].map((provider) => [provider.name, provider]),
+  [cloudflare as ParentProvider, github as ParentProvider].map((provider) => [provider.name, provider]),
 );
 
 export function providerNames(): string[] {
@@ -70,7 +71,13 @@ function providerFor(name: string): ParentProvider {
   return provider;
 }
 
-function providerSpec(provider: ParentProvider, fields: Record<string, unknown>): unknown {
+function providerSpec(provider: ParentProvider, spec: ParsedSpec): unknown {
+  if (provider.maxTtlMinutes != null && spec.ttlMinutes > provider.maxTtlMinutes)
+    throw new PolicyError(
+      400,
+      `${provider.name} keys last at most ${provider.maxTtlMinutes} minutes; set "ttlMinutes" to ${provider.maxTtlMinutes} or less`,
+    );
+  const fields = spec.fields;
   try {
     return provider.parseSpec(fields);
   } catch (error) {
@@ -79,15 +86,18 @@ function providerSpec(provider: ParentProvider, fields: Record<string, unknown>)
 }
 
 /** Validates a parent before it is stored; returns the normalized config. */
-export function parseParentConfig(
+export async function parseParent(
   providerName: string,
   config: Record<string, string>,
-): Record<string, string> {
+  value: string,
+): Promise<Record<string, string>> {
   const provider = providerFor(providerName);
   try {
-    return provider.parseConfig(config);
+    const parsed = provider.parseConfig(config);
+    await provider.checkValue?.(value);
+    return parsed;
   } catch (error) {
-    throw new PolicyError(400, error instanceof Error ? error.message : "invalid parent config");
+    throw new PolicyError(400, error instanceof Error ? error.message : "invalid parent");
   }
 }
 
@@ -102,7 +112,7 @@ export class Minter {
     const spec = parseSpec(value);
     const parent = await store.getParent(spec.parent);
     if (parent == null) throw new PolicyError(400, `parent "${spec.parent}" does not exist`);
-    providerSpec(providerFor(parent.provider), spec.fields);
+    providerSpec(providerFor(parent.provider), spec);
   }
 
   /** Mints one child for `label` (project/env/NAME) and returns its value. */
@@ -114,7 +124,7 @@ export class Minter {
     const parent = await store.getParent(spec.parent);
     if (parent == null) throw new PolicyError(409, `${input.label}: parent "${spec.parent}" does not exist`);
     const provider = providerFor(parent.provider);
-    const providerFields = providerSpec(provider, spec.fields);
+    const providerFields = providerSpec(provider, spec);
     const expires = new Date(this.now().getTime() + spec.ttlMinutes * 60_000);
     expires.setUTCMilliseconds(0);
     const expiresAt = expires.toISOString();
