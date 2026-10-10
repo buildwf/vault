@@ -52,6 +52,7 @@ export const auditActionSchema = v.picklist([
   "route_put",
   "secret_delete",
   "set",
+  "ui_signin",
 ]);
 
 export const scopeSchema = v.object({ project: v.string(), env: v.string() });

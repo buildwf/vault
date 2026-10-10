@@ -5,7 +5,21 @@ For example: `https://shared-vault.buildwithfriends.workers.dev/ui`.
 
 ## Sign in
 
-Paste a vault key.
+Run this command where you are logged in to the vault:
+
+```sh
+vault ui
+```
+
+The command opens the UI in your browser. You are signed in as your CLI login.
+To get the link without opening a browser, use `vault ui --print`.
+
+The link works one time only, for 2 minutes. It does not contain your key.
+The browser exchanges the link for a session key. The session key has the same type, permission and scopes as your CLI key. It expires after 12 hours, or when your CLI key expires, if that is sooner.
+Session keys show in `vault keys list` with the label `web ui (...)`.
+
+You can also paste a vault key on the sign-in page.
+
 The browser keeps the key in the tab only. It removes the key when you close the tab or select **sign out**.
 
 An operator key (`user`) can use all pages.

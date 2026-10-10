@@ -52,6 +52,7 @@ const options = {
   yes: { type: "boolean" },
   random: { type: "boolean" },
   "include-revoked": { type: "boolean" },
+  print: { type: "boolean" },
 } as const;
 const optionTypes = new Map<string, string>(
   Object.entries(options).map(([name, option]) => [name, option.type]),
@@ -135,6 +136,7 @@ export function parseArgv(argv: string[]) {
       yes: seen.has("yes"),
       random: seen.has("random"),
       includeRevoked: seen.has("include-revoked"),
+      print: seen.has("print"),
       rest,
     },
   };
@@ -306,6 +308,8 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
       }
       case "master-keys":
         return await runMasterKeys(flags, io);
+      case "ui":
+        return await openWebUi(flags, io);
       // `return await`, not `return`: a promise returned out of a `try` is not
       // caught by its `catch`.
       case "run":
@@ -715,6 +719,23 @@ async function spawnCommand(argv: string[], env: ProcessEnvironment): Promise<nu
   }
 }
 
+/**
+ * Open the web UI signed in as this login. The URL carries a one-time code,
+ * not the key: the page trades it for a session key of its own, so the CLI's
+ * key never reaches the browser.
+ */
+async function openWebUi(flags: Flags, io: typeof DEFAULT_CLI_IO): Promise<number> {
+  const { client } = session(flags);
+  const link = await client.createUiLink();
+  const url = `${client.apiUrl}/ui#signin=${link.code}`;
+  if (!flags.print && (await openCollectionBrowser(url))) {
+    io.log(`opened ${client.apiUrl}/ui in your browser`);
+    return 0;
+  }
+  io.log(`open this link within 2 minutes; it works once:\n${url}`);
+  return 0;
+}
+
 function helpText(): string {
   return `vault
 
@@ -733,6 +754,7 @@ function helpText(): string {
   vault parents list|set NAME --provider cloudflare|github --config KEY=VALUE   # value from hidden input or stdin
   vault parents minted NAME [--limit N] | revoke NAME --yes | delete NAME --yes
   vault audit [--limit N] [--cursor CURSOR]
+  vault ui [--print]                       # open the web UI, signed in as this login
   vault master-keys status|prepare|retire FINGERPRINT --yes
   vault run -- CMD                          # injects every secret in project/env
   vault hook                               # Claude Code hook (see plugin/)
