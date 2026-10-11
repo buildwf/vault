@@ -17,6 +17,8 @@ import {
   type KeyRow,
   type MintedKeyRow,
   type NamedRow,
+  type OAuthCodeRow,
+  type OAuthGrantRow,
   type OrgRow,
   type RevokeOutcome,
   type ParentRow,
@@ -740,6 +742,132 @@ export class D1Backend implements VaultBackend {
           keyPrefix: row.key_prefix,
           expiresAt: row.expires_at,
         };
+  }
+
+  async insertOAuthCode({ code, now }: { code: OAuthCodeRow; now: string }): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM oauth_codes WHERE expires_at < ?").bind(now),
+      this.db
+        .prepare(
+          `INSERT INTO oauth_codes (
+            code_hash, org_id, client_id, redirect_uri, code_challenge, key_prefix,
+            scopes_encrypted, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          code.codeHash,
+          code.orgId,
+          code.clientId,
+          code.redirectUri,
+          code.codeChallenge,
+          code.keyPrefix,
+          code.scopesEncrypted,
+          code.expiresAt,
+        ),
+    ]);
+  }
+
+  async takeOAuthCode({ codeHash }: { codeHash: string }): Promise<OAuthCodeRow | null> {
+    const row = await this.db
+      .prepare("DELETE FROM oauth_codes WHERE code_hash = ? RETURNING *")
+      .bind(codeHash)
+      .first<Record<string, string>>();
+    return row == null
+      ? null
+      : {
+          codeHash: row.code_hash!,
+          orgId: row.org_id!,
+          clientId: row.client_id!,
+          redirectUri: row.redirect_uri!,
+          codeChallenge: row.code_challenge!,
+          keyPrefix: row.key_prefix!,
+          scopesEncrypted: row.scopes_encrypted!,
+          expiresAt: row.expires_at!,
+        };
+  }
+
+  async insertOAuthGrant({ grant, now }: { grant: OAuthGrantRow; now: string }): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM oauth_grants WHERE expires_at < ?").bind(now),
+      this.db
+        .prepare(
+          `INSERT INTO oauth_grants (
+            id, org_id, key_prefix, client_id, access_hash, access_expires_at,
+            refresh_hash, approvals_encrypted, expires_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          grant.id,
+          grant.orgId,
+          grant.keyPrefix,
+          grant.clientId,
+          grant.accessHash,
+          grant.accessExpiresAt,
+          grant.refreshHash,
+          grant.approvalsEncrypted,
+          grant.expiresAt,
+        ),
+    ]);
+  }
+
+  async findOAuthGrant(
+    input: { id: string } | { accessHash: string } | { refreshHash: string },
+  ): Promise<OAuthGrantRow | null> {
+    const [column, value] =
+      "id" in input
+        ? ["id", input.id]
+        : "accessHash" in input
+          ? ["access_hash", input.accessHash]
+          : ["refresh_hash", input.refreshHash];
+    const row = await this.db
+      .prepare(`SELECT * FROM oauth_grants WHERE ${column} = ?`)
+      .bind(value)
+      .first<Record<string, string | null>>();
+    return row == null
+      ? null
+      : {
+          id: row.id!,
+          orgId: row.org_id!,
+          keyPrefix: row.key_prefix!,
+          clientId: row.client_id!,
+          accessHash: row.access_hash!,
+          accessExpiresAt: row.access_expires_at!,
+          refreshHash: row.refresh_hash!,
+          approvalsEncrypted: row.approvals_encrypted ?? null,
+          expiresAt: row.expires_at!,
+        };
+  }
+
+  async rotateOAuthGrant({
+    id,
+    refreshHash,
+    next,
+  }: {
+    id: string;
+    refreshHash: string;
+    next: { accessHash: string; accessExpiresAt: string; refreshHash: string };
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ?
+         WHERE id = ? AND refresh_hash = ?`,
+      )
+      .bind(next.accessHash, next.accessExpiresAt, next.refreshHash, id, refreshHash)
+      .run();
+    return (result.meta.changes ?? 0) === 1;
+  }
+
+  async setOAuthApprovals({
+    id,
+    approvalsEncrypted,
+  }: {
+    id: string;
+    approvalsEncrypted: string;
+  }): Promise<void> {
+    await this.db
+      .prepare("UPDATE oauth_grants SET approvals_encrypted = ? WHERE id = ?")
+      .bind(approvalsEncrypted, id)
+      .run();
   }
 
   private insertKeyStatement(key: KeyRow): D1PreparedStatement {

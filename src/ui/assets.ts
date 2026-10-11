@@ -431,10 +431,12 @@ async function render(notice) {
 }
 
 function signIn() {
+  rememberNext();
   var input = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", required: true });
   var status = h("div");
   return [
     h("h1", { text: "Vault" }),
+    RESUMABLE.indexOf(route()[0]) >= 0 ? h("p", { class: "lede", text: "Sign in to continue: an app is asking to use this vault." }) : null,
     h("p", { class: "lede" }, "Run ", h("code", { text: "vault ui" }), " in a terminal where you are logged in. It opens this page signed in as you."),
     h("p", { class: "muted", text: "Or paste a vault key. Operator keys manage everything in their org; other keys see what their scopes allow." }),
     h("form", { on: { submit: async function (event) {
@@ -669,7 +671,120 @@ var views = {
         })),
     ];
   },
+
+  /* An app such as Claude asks to connect (OAuth). /oauth/authorize checked the
+     client and sent the browser here; the vault checks everything again on approve. */
+  connect: async function (rest) {
+    var q = new URLSearchParams(rest[0] || "");
+    var client = await api("GET", "/v1/oauth/client?client_id=" + enc(q.get("client_id") || "") + "&redirect_uri=" + enc(q.get("redirect_uri") || ""));
+    var envs = [];
+    state.overview.projects.forEach(function (p) { p.environments.forEach(function (e) { envs.push({ project: p.name, env: e.name }); }); });
+    var boxes = envs.map(function (s, i) {
+      return h("label", { class: "check" }, h("input", { type: "checkbox", id: "connect-" + i, checked: envs.length === 1 }), s.project + " / " + s.env);
+    });
+    var status = h("div");
+    function leave(url) { forgetNext(); location.replace(url); }
+    var allow = h("button", { type: "button", class: "primary", text: "Connect", on: { click: async function () {
+      var scopes = envs.filter(function (s, i) { return document.getElementById("connect-" + i).checked; });
+      if (scopes.length === 0) { status.replaceChildren(errorLine(new Error("pick at least one environment"))); return; }
+      allow.disabled = true;
+      try {
+        var body = { client_id: q.get("client_id"), redirect_uri: q.get("redirect_uri"), code_challenge: q.get("code_challenge"), scopes: scopes };
+        if (q.get("state") != null) body.state = q.get("state");
+        leave((await api("POST", "/v1/oauth/approve", body)).redirect);
+      } catch (error) { allow.disabled = false; status.replaceChildren(errorLine(error)); }
+    } } });
+    var deny = h("button", { type: "button", class: "link", text: "Cancel", on: { click: function () {
+      var back = new URL(client.redirectUri);
+      back.searchParams.set("error", "access_denied");
+      if (q.get("state") != null) back.searchParams.set("state", q.get("state"));
+      back.searchParams.set("iss", location.origin);
+      leave(back.toString());
+    } } });
+    return [
+      h("h1", { text: "Connect " + client.name }),
+      h("p", { class: "lede", text: client.name + " wants to use secrets from this vault. It sees secret names and can call APIs with the secrets, but the vault sends each request, so it never sees a value. You allow each secret and site the first time it is used." }),
+      h("dl", null,
+        h("dt", { text: "returns to" }), h("dd", { text: new URL(client.redirectUri).origin }),
+        h("dt", { text: "lasts" }), h("dd", { text: "30 days. Revoke it any time under vault keys: it is listed as " + client.name + " (MCP connector)." })),
+      h("h2", { text: "Which environments" }),
+      envs.length > 0 ? boxes : h("p", { class: "muted", text: "No environments yet. Create a project first." }),
+      status,
+      h("p", { class: "buttons" }, allow, deny),
+    ];
+  },
+
+  /* A connected app's use_secret needs the user's yes (clients that cannot ask in the chat). */
+  approve: async function (rest) {
+    var id = rest[0] || "";
+    var a = await api("GET", "/v1/oauth/approvals/" + enc(id));
+    var how = select("approve-for", ["15 minutes", "1 day", "30 days"], "15 minutes");
+    var status = h("div");
+    async function settle(minutes) {
+      forgetNext();
+      try {
+        await api("POST", "/v1/oauth/approvals/" + enc(id), { minutes: minutes });
+        fill(main, h("h1", { text: minutes ? "Allowed" : "Not allowed" }),
+          h("p", { class: "lede", text: "Go back to " + a.client + " and tell it to try again." }));
+      } catch (error) { status.replaceChildren(errorLine(error)); }
+    }
+    return [
+      h("h1", { text: "Allow " + a.client + " to use " + a.names.join(", ") + "?" }),
+      h("p", { class: "lede", text: "It asked to send " + (a.names.length === 1 ? "this secret" : "these secrets") + " to " + a.host + ". The vault adds " + (a.names.length === 1 ? "it" : "them") + " to the request headers and sends the request itself; " + a.client + " never sees the value." }),
+      h("dl", null,
+        h("dt", { text: "secrets" }), h("dd", { text: a.names.join(", ") }),
+        h("dt", { text: "from" }), h("dd", { text: a.project + " / " + a.env }),
+        h("dt", { text: "sent to" }), h("dd", { text: a.host }),
+        h("dt", { text: "answer by" }), h("dd", { text: when(a.expiresAt) })),
+      field("Allow for", how),
+      status,
+      h("p", { class: "buttons" },
+        h("button", { type: "button", class: "primary", text: "Allow", on: { click: function () {
+          settle({ "15 minutes": 15, "1 day": 1440, "30 days": 43200 }[how.value]);
+        } } }),
+        h("button", { type: "button", class: "link", text: "Don't allow", on: { click: function () { settle(0); } } })),
+    ];
+  },
+
+  /* A connected app asked for a missing secret; the user types it here, never in the chat. */
+  collect: async function (rest) {
+    var project = rest[0], env = rest[1], name = rest[2];
+    var input = h("input", { id: "collect-value", type: "password", autocomplete: "off", spellcheck: "false", required: true, maxlength: 16384 });
+    var status = h("div");
+    var button = h("button", { type: "submit", class: "primary", text: "Save to the vault" });
+    return [
+      h("h1", { text: "Add " + name }),
+      h("p", { class: "lede", text: "An AI asked for " + name + " in " + project + " / " + env + ". The value goes straight to the vault; the AI only learns that it is stored." }),
+      h("form", { on: { submit: async function (event) {
+        event.preventDefault();
+        button.disabled = true;
+        forgetNext();
+        try {
+          await api("POST", "/v1/projects/" + enc(project) + "/environments/" + enc(env) + "/secrets/" + enc(name), { value: input.value, kind: "secret" });
+          input.value = "";
+          fill(main, h("h1", { text: "Saved" }), h("p", { class: "lede", text: name + " is in the vault. Go back to the chat and say it is done." }));
+        } catch (error) { button.disabled = false; status.replaceChildren(errorLine(error)); }
+      } } }, field(name, input, "Write-only. Nobody can read it back here."), status, button),
+    ];
+  },
 };
+
+/* Sign-in can happen in another tab (vault ui opens one), so remember where an
+   app was sending the user for ten minutes, and go there after signing in. */
+var NEXT = "vault.next";
+var RESUMABLE = ["connect", "approve", "collect"];
+function rememberNext() {
+  if (RESUMABLE.indexOf(route()[0]) < 0) return;
+  try { localStorage.setItem(NEXT, JSON.stringify({ hash: location.hash, at: Date.now() })); } catch (e) {}
+}
+function forgetNext() { try { localStorage.removeItem(NEXT); } catch (e) {} }
+function takeNext() {
+  try {
+    var next = JSON.parse(localStorage.getItem(NEXT) || "null");
+    forgetNext();
+    return next && Date.now() - next.at < 600000 ? next.hash : null;
+  } catch (e) { return null; }
+}
 
 function crumbs() {
   var nodes = [];
@@ -838,6 +953,8 @@ async function start() {
       if (!res.ok) throw new Error(data && data.error ? data.error : "sign-in failed (" + res.status + ")");
       setKey(data.key);
       state.overview = null;
+      var next = takeNext();
+      if (next) history.replaceState(null, "", location.pathname + next);
     } catch (error) {
       setKey(null);
       fill(nav);
