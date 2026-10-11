@@ -120,6 +120,31 @@ export type UiLinkRow = {
   expiresAt: string;
 };
 
+/** A one-time OAuth authorization code, approved by the operator key `keyPrefix`. */
+export type OAuthCodeRow = {
+  codeHash: string;
+  orgId: string;
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  keyPrefix: string;
+  scopesEncrypted: string;
+  expiresAt: string;
+};
+
+/** An OAuth client's grant: its own system key plus the current token hashes. */
+export type OAuthGrantRow = {
+  id: string;
+  orgId: string;
+  keyPrefix: string;
+  clientId: string;
+  accessHash: string;
+  accessExpiresAt: string;
+  refreshHash: string;
+  approvalsEncrypted: string | null;
+  expiresAt: string;
+};
+
 export type RevokeOutcome = "revoked" | "not_found" | "last_user_key";
 
 export interface VaultBackend {
@@ -236,4 +261,21 @@ export interface VaultBackend {
   insertUiLink(input: { link: UiLinkRow; now: string }): Promise<void>;
   /** Deletes the link and returns it, so a code works at most once; null if absent. */
   takeUiLink(input: { codeHash: string }): Promise<UiLinkRow | null>;
+
+  /** Inserts the code and deletes codes that expired before `now`. */
+  insertOAuthCode(input: { code: OAuthCodeRow; now: string }): Promise<void>;
+  /** Deletes the code and returns it, so a code works at most once; null if absent. */
+  takeOAuthCode(input: { codeHash: string }): Promise<OAuthCodeRow | null>;
+  /** Inserts the grant and deletes grants that expired before `now`. */
+  insertOAuthGrant(input: { grant: OAuthGrantRow; now: string }): Promise<void>;
+  findOAuthGrant(
+    input: { id: string } | { accessHash: string } | { refreshHash: string },
+  ): Promise<OAuthGrantRow | null>;
+  /** Replaces both tokens if `refreshHash` is still current; false if it was already used. */
+  rotateOAuthGrant(input: {
+    id: string;
+    refreshHash: string;
+    next: { accessHash: string; accessExpiresAt: string; refreshHash: string };
+  }): Promise<boolean>;
+  setOAuthApprovals(input: { id: string; approvalsEncrypted: string }): Promise<void>;
 }

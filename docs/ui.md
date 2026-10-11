@@ -37,6 +37,14 @@ A system key sees only the environments in its scopes.
 | audit | Every read and change, by key label. | Read only. |
 | orgs | The orgs in the vault. Platform org only. | Make orgs. |
 
+Three more pages open from links that an AI client gives you. Refer to [Use the vault with Claude](claude.md).
+
+| Page | You can |
+|---|---|
+| connect | Let an MCP client, for example Claude, use some environments. |
+| approve | Let a connected client send a secret to a host. |
+| collect | Type a secret that an AI asked for. |
+
 ## Rules
 
 - The UI never shows a secret value or a parent key. It shows names, kinds, and the parent name of a minted secret.

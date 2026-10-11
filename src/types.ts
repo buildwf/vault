@@ -43,6 +43,8 @@ export const auditActionSchema = v.picklist([
   "master_key_retire",
   "mint",
   "mint_revoke",
+  "oauth_approve",
+  "oauth_grant",
   "org_create",
   "project_create",
   "project_delete",

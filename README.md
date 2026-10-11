@@ -170,6 +170,17 @@ claude plugin marketplace add /path/to/this/repo
 claude plugin install vault@vault
 ```
 
+### Hosted MCP for claude.ai and other cloud agents
+
+Clients that cannot run the CLI connect to the Worker's own MCP endpoint,
+`https://<worker>/mcp`, with OAuth: add it as a custom connector, sign in to
+the web UI as an operator, and pick the environments. It offers
+`describe_context`, `use_secret` (the Worker sends the request, so values
+never leave Cloudflare) and `collect_secret` (a link to a page in the web UI).
+Each connection is a read-only system key labelled `<client> (MCP connector)`;
+revoke it to disconnect. Apply `migrations/0006_oauth.sql` before deploying.
+See [docs/claude.md](docs/claude.md).
+
 Run `bun run acceptance:collection` for synthetic browser and encrypted-storage
 acceptance. Images and the receipt are under `.wrangler/collection-acceptance`.
 

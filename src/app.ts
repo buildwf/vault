@@ -21,18 +21,35 @@
  *
  * @see {@link https://vault.buildwithfriends.dev/reference/http-api/}
  */
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Hono, type HonoRequest } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
 
+import { createHostedMcp } from "./agent/hosted.ts";
 import { DEFAULT_ORG } from "./backend.ts";
+import { exportSecrets } from "./export.ts";
 import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
 import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from "./ui/assets.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
 import { bearerFrom, randomApiKey, randomSecretValue } from "./keys.ts";
+import {
+  GrantApprovals,
+  approve,
+  approveSchema,
+  authenticate,
+  bearerChallenge,
+  oauthMetadata,
+  pendingApproval,
+  registerSchema,
+  requireClient,
+  signClient,
+  token,
+} from "./oauth.ts";
 import {
   PolicyError,
   assertCanReadValues,
@@ -118,6 +135,9 @@ const uiSessionSchema = v.strictObject({
 const UI_LINK_TTL_MS = 2 * 60 * 1000;
 /** The longest a web UI session key lives; never past the key that made it. */
 const UI_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const settleApprovalSchema = v.strictObject({
+  minutes: v.picklist([0, 15, 1440, 43200]),
+});
 const auditCursorSchema = v.object({
   createdAt: v.string(),
   id: v.string(),
@@ -220,6 +240,97 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   app.get("/ui/app.css", uiAsset(UI_CSS, "text/css; charset=utf-8"));
   app.get("/ui/app.js", uiAsset(UI_JS, "text/javascript; charset=utf-8"));
 
+  // OAuth and the hosted MCP endpoint (see oauth.ts). Clients may call these
+  // from a browser; they carry bearer tokens, never cookies.
+  const origin = (c: { req: { url: string } }) => new URL(c.req.url).origin;
+  const open = cors({
+    origin: "*",
+    allowHeaders: ["Authorization", "Content-Type", "Mcp-Protocol-Version", "Mcp-Method", "Mcp-Name", "Mcp-Session-Id", "Last-Event-ID"],
+    exposeHeaders: ["WWW-Authenticate", "Mcp-Session-Id"],
+  });
+  for (const path of ["/.well-known/*", "/oauth/register", "/oauth/token", "/mcp"]) app.use(path, open);
+  app.get("/.well-known/oauth-protected-resource", (c) => c.json(oauthMetadata(origin(c)).resource));
+  app.get("/.well-known/oauth-protected-resource/mcp", (c) => c.json(oauthMetadata(origin(c)).resource));
+  app.get("/.well-known/oauth-authorization-server", (c) => c.json(oauthMetadata(origin(c)).server));
+
+  app.post("/oauth/register", bodyLimit({ maxSize: 16384 }), async (c) => {
+    const parsed = v.safeParse(registerSchema, await c.req.json().catch(() => null));
+    if (!parsed.success)
+      return c.json(
+        { error: "invalid_client_metadata", error_description: "redirect_uris must be https (or http on localhost)" },
+        400,
+      );
+    const { clientId, client } = await signClient(keyring.crypto, parsed.output);
+    return c.json(
+      {
+        client_id: clientId,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        client_name: client.name,
+        redirect_uris: client.redirectUris,
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      },
+      201,
+    );
+  });
+
+  // Checks the request, then hands the browser to the web UI, where an
+  // operator signs in and approves. The query rides in the fragment.
+  app.get("/oauth/authorize", async (c) => {
+    const query = c.req.query();
+    const client = await requireClient(keyring.crypto, query.client_id ?? "", query.redirect_uri ?? "");
+    const fail = (error: string, description: string) => {
+      const back = new URL(query.redirect_uri!);
+      back.searchParams.set("error", error);
+      back.searchParams.set("error_description", description);
+      if (query.state != null) back.searchParams.set("state", query.state);
+      back.searchParams.set("iss", origin(c));
+      return c.redirect(back.toString());
+    };
+    if (query.response_type !== "code") return fail("unsupported_response_type", "use response_type=code");
+    if (query.code_challenge_method !== "S256" || !/^[A-Za-z0-9_-]{43}$/u.test(query.code_challenge ?? ""))
+      return fail("invalid_request", "PKCE with S256 is required");
+    if (query.resource != null && query.resource.replace(/\/$/u, "") !== `${origin(c)}/mcp`)
+      return fail("invalid_target", `resource must be ${origin(c)}/mcp`);
+    const request = new URLSearchParams({
+      client_id: query.client_id!,
+      redirect_uri: query.redirect_uri!,
+      code_challenge: query.code_challenge!,
+      client_name: client.name,
+    });
+    if (query.state != null) request.set("state", query.state);
+    return c.redirect(`/ui#/connect/${encodeURIComponent(request.toString())}`);
+  });
+
+  app.post("/oauth/token", bodyLimit({ maxSize: 65536 }), (c) => token(c, keyring));
+
+  app.all("/mcp", async (c) => {
+    let resolved;
+    try {
+      resolved = await authenticate(keyring, c.req.header("Authorization"));
+    } catch (error) {
+      if (!(error instanceof PolicyError)) throw error;
+      return c.json({ error: error.message }, 401, {
+        "WWW-Authenticate": bearerChallenge(origin(c), c.req.header("Authorization") ? "invalid_token" : undefined),
+      });
+    }
+    const { grant, crypto, store, key } = resolved;
+    const approvals = new GrantApprovals(keyring.backend, crypto, grant);
+    const handler = createMcpHandler(() =>
+      createHostedMcp({ store, key, approvals, minter, origin: origin(c) }),
+    );
+    return handler.fetch(c.req.raw, {
+      authInfo: {
+        token: bearerFrom(c.req.header("Authorization"))!,
+        clientId: grant.clientId,
+        scopes: ["vault:use"],
+        expiresAt: Math.floor(Date.parse(grant.accessExpiresAt) / 1000),
+        resource: new URL(`${origin(c)}/mcp`),
+      },
+    });
+  });
+
   app.use("/v1/*", async (c, next) => {
     if (c.req.path === "/v1/bootstrap" && c.req.method === "POST") {
       c.set("store", new VaultStore(keyring.backend, keyring.crypto));
@@ -318,6 +429,43 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       projects,
       parents: isOperator(key) ? await store.listParents() : null,
     });
+  });
+
+  // The web UI's half of OAuth: who is asking, then the operator's answer.
+  const manageConnections = operatorOnly("only operators can connect apps");
+  app.get("/v1/oauth/client", manageConnections, async (c) => {
+    const redirectUri = c.req.query("redirect_uri") ?? "";
+    const client = await requireClient(keyring.crypto, c.req.query("client_id") ?? "", redirectUri);
+    return c.json({ name: client.name, redirectUri });
+  });
+
+  app.post("/v1/oauth/approve", manageConnections, async (c) => {
+    const body = await parseBody(approveSchema, c.req);
+    return c.json({ redirect: await approve(keyring, c.get("store"), c.get("key"), origin(c), body) });
+  });
+
+  app.get("/v1/oauth/approvals/:id", manageConnections, async (c) => {
+    const { pending, client } = await pendingApproval(keyring, c.get("store").orgId, c.req.param("id"));
+    return c.json({
+      client,
+      project: pending.project,
+      env: pending.env,
+      names: pending.names,
+      host: pending.host,
+      expiresAt: new Date(pending.expiresAt).toISOString(),
+    });
+  });
+
+  app.post("/v1/oauth/approvals/:id", manageConnections, async (c) => {
+    const body = await parseBody(settleApprovalSchema, c.req);
+    const { approvals } = await pendingApproval(keyring, c.get("store").orgId, c.req.param("id"));
+    await approvals.settle(c.req.param("id"), body.minutes);
+    await c.get("store").audit({
+      keyPrefix: c.get("key").keyPrefix,
+      action: "oauth_approve",
+      status: body.minutes > 0 ? "ok" : "denied",
+    });
+    return c.json({ ok: true });
   });
 
   app.get("/v1/orgs", manageOrgs, async (c) => {
@@ -443,41 +591,17 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     if (!show && !exporting) {
       return c.json({ secrets: await store.listSecretMeta(environmentId) });
     }
-    let secrets = await store.listSecrets(environmentId);
     // `names` narrows an export to the secrets a caller needs, so a brokered
     // call mints only the child keys it uses.
     const names = c.req.query("names");
-    if (exporting && names != null) {
-      const wanted = new Set(names.split(","));
-      secrets = secrets.filter((secret) => wanted.has(secret.name));
-    }
-    const values = new Map<string, string | undefined>();
-    for (const secret of secrets) {
-      if (exporting && secret.kind === "minted") {
-        const label = `${project}/${env}/${secret.name}`;
-        try {
-          values.set(
-            secret.name,
-            await minter.mint(store, { value: secret.value, label, keyPrefix: key.keyPrefix }),
-          );
-          await store.audit({ keyPrefix: key.keyPrefix, action: "mint", status: "ok", secretName: secret.name });
-        } catch (error) {
-          await store.audit({ keyPrefix: key.keyPrefix, action: "mint", status: "failed", secretName: secret.name });
-          throw error;
-        }
-        continue;
-      }
-      values.set(
-        secret.name,
-        exporting || valueVisibleOnGet(secret.kind) ? secret.value : undefined,
-      );
-    }
+    const secrets = exporting
+      ? await exportSecrets(store, minter, key, project, env, names?.split(","))
+      : (await store.listSecrets(environmentId)).map((secret) => ({
+          ...secret,
+          value: valueVisibleOnGet(secret.kind) ? secret.value : undefined,
+        }));
     return c.json({
-      secrets: secrets.map((secret) => ({
-        name: secret.name,
-        kind: secret.kind,
-        value: values.get(secret.name),
-      })),
+      secrets: secrets.map(({ name, kind, value }) => ({ name, kind, value })),
     });
   });
 

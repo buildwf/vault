@@ -519,6 +519,7 @@ export class VaultStore {
     action: AuditAction;
     status: string;
     secretName?: string;
+    host?: string;
   }): Promise<void> {
     await this.backend.insertAudit({
       event: {
@@ -526,7 +527,7 @@ export class VaultStore {
         orgId: this.orgId,
         keyPrefix: input.keyPrefix,
         action: input.action,
-        hostEncrypted: null,
+        hostEncrypted: input.host != null ? await this.vaultCrypto.encrypt(input.host) : null,
         secretNameEncrypted:
           input.secretName != null
             ? await this.vaultCrypto.encrypt(input.secretName)
