@@ -32,6 +32,8 @@ export default defineConfig(({ mode }) => {
   const workerName = process.env.VAULT_WORKER_NAME ?? "bwf-vault";
   const d1Name = process.env.VAULT_D1_NAME ?? "bwf-vault";
   const prefix = process.env.VAULT_SECRET_PREFIX ?? "BWF_VAULT";
+  // Sign in with GitHub: on when the deploy names a GitHub OAuth app.
+  const githubClientId = process.env.VAULT_GITHUB_CLIENT_ID ?? "";
   const storeSecret = (slot: string) =>
     bindings.secretsStoreSecret({
       storeId: required("VAULT_SECRETS_STORE_ID"),
@@ -74,6 +76,12 @@ export default defineConfig(({ mode }) => {
               MASTER_KEY_SECONDARY: bindings.secret(),
               BOOTSTRAP_TOKEN: bindings.secret(),
             }),
+        ...(githubClientId !== ""
+          ? {
+              GITHUB_CLIENT_ID: bindings.text(githubClientId),
+              GITHUB_CLIENT_SECRET: production ? storeSecret("GITHUB_CLIENT_SECRET") : bindings.secret(),
+            }
+          : {}),
       },
     },
   };

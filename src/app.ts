@@ -24,6 +24,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Hono, type HonoRequest } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
 import * as v from "valibot";
@@ -31,6 +32,14 @@ import * as v from "valibot";
 import { createHostedMcp } from "./agent/hosted.ts";
 import { DEFAULT_ORG } from "./backend.ts";
 import { exportSecrets } from "./export.ts";
+import {
+  GITHUB_LOGIN,
+  githubAuthorizeUrl,
+  githubUserByLogin,
+  githubUserFromCode,
+  type GithubFetch,
+  type GithubSignInConfig,
+} from "./github-signin.ts";
 import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
 import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from "./ui/assets.ts";
@@ -135,6 +144,13 @@ const uiSessionSchema = v.strictObject({
 const UI_LINK_TTL_MS = 2 * 60 * 1000;
 /** The longest a web UI session key lives; never past the key that made it. */
 const UI_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/** A sign-in link made by GitHub sign-in names the GitHub account, not a key. */
+const GITHUB_LINK_PREFIX = "github:";
+/** Ties GitHub's callback to the browser that started the sign-in. */
+const GITHUB_STATE_COOKIE = "vault_github_state";
+const addPersonSchema = v.strictObject({
+  login: v.pipe(v.string(), v.regex(GITHUB_LOGIN)),
+});
 const settleApprovalSchema = v.strictObject({
   minutes: v.picklist([0, 15, 1440, 43200]),
 });
@@ -167,7 +183,32 @@ type AppOptions = {
   inactiveMasterKey: string;
   /** Mints child keys from parent keys; tests pass one with a fake provider transport. */
   minter?: Minter;
+  /** The GitHub OAuth app for web UI sign-in; without it, only `vault ui` and keys sign in. */
+  github?: GithubSignInConfig;
+  /** Reaches GitHub; tests pass a fake. */
+  githubFetch?: GithubFetch;
 };
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/gu, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
+/** A one-line page for the browser steps that are not the UI itself. */
+function plainPage(message: string, status: 200 | 400 | 403 | 404 | 502 = 200): Response {
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Vault</title>` +
+      `<p style="font:16px system-ui;margin:2rem;max-width:40rem">${message}</p>` +
+      `<p style="font:16px system-ui;margin:2rem"><a href="/ui">Back to the vault</a></p>`,
+    {
+      status,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": "default-src 'none'",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
 
 function parentName(name: string): string {
   if (!PARENT_NAME.test(name))
@@ -198,7 +239,9 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   const manageMasterKeys = platformOnly("cannot manage master keys");
   const manageOrgs = platformOnly("cannot manage orgs");
   const manageParents = operatorOnly("cannot manage parent keys");
+  const managePeople = operatorOnly("cannot manage people");
   const minter = options.minter ?? new Minter();
+  const fetcher = options.githubFetch;
 
   app.onError((error, c) => {
     if (error instanceof PolicyError) {
@@ -219,6 +262,7 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       ok: true,
       name: "bwf-vault",
       bootstrapped: await store.isBootstrapped(),
+      githubSignIn: options.github != null,
       activeMasterKeyFingerprint: keyring.activeFingerprint,
     });
   });
@@ -317,6 +361,69 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     ),
   );
 
+  // Sign in with GitHub. GitHub says who the person is; `github_people` says
+  // which orgs they operate. The callback hands the browser one-time sign-in
+  // links, exactly like `vault ui` does, so the session key never rides a URL.
+  app.get("/auth/github", (c) => {
+    if (options.github == null) return plainPage("GitHub sign-in is not set up on this vault.", 404);
+    const state = randomSecretValue();
+    setCookie(c, GITHUB_STATE_COOKIE, state, {
+      path: "/auth/github",
+      maxAge: 600,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+    c.header("Cache-Control", "no-store");
+    return c.redirect(githubAuthorizeUrl(options.github, `${origin(c)}/auth/github/callback`, state));
+  });
+
+  app.get("/auth/github/callback", async (c) => {
+    const github = options.github;
+    if (github == null) return plainPage("GitHub sign-in is not set up on this vault.", 404);
+    const expected = getCookie(c, GITHUB_STATE_COOKIE);
+    deleteCookie(c, GITHUB_STATE_COOKIE, { path: "/auth/github", secure: true });
+    const { code, state, error } = c.req.query();
+    if (error != null) return plainPage("GitHub sign-in was cancelled.", 400);
+    if (code == null || state == null || expected == null || !(await timingSafeStringEqual(state, expected)))
+      return plainPage("This sign-in started in another browser or took too long. Start again from the vault page.", 400);
+    let user;
+    try {
+      user = await githubUserFromCode(github, code, `${origin(c)}/auth/github/callback`, fetcher);
+    } catch (failure) {
+      if (failure instanceof PolicyError) return plainPage(escapeHtml(failure.message), 502);
+      throw failure;
+    }
+    const people = await keyring.backend.findGithubPerson({ githubId: user.id });
+    if (people.length === 0)
+      return plainPage(
+        `The GitHub account <b>@${escapeHtml(user.login)}</b> is not an operator of any org here. ` +
+          `An operator of your org can add it with <code>vault people add ${escapeHtml(user.login)}</code>.`,
+        403,
+      );
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + UI_LINK_TTL_MS).toISOString();
+    const links = [];
+    for (const person of people) {
+      const linkCode = randomSecretValue();
+      await keyring.backend.insertUiLink({
+        link: {
+          codeHash: await keyring.crypto.sha256(linkCode),
+          orgId: person.orgId,
+          keyPrefix: `${GITHUB_LINK_PREFIX}${user.id}`,
+          expiresAt,
+        },
+        now,
+      });
+      const name =
+        person.orgId === DEFAULT_ORG ? "platform" : ((await keyring.backend.getOrg({ id: person.orgId }))?.name ?? person.orgId);
+      links.push(`${name}:${linkCode}`);
+    }
+    c.header("Cache-Control", "no-store");
+    // One org signs straight in; several let the person pick on the page.
+    return c.redirect(links.length === 1 ? `/ui#signin=${links[0]!.split(":")[1]}` : `/ui#choose=${links.join(",")}`);
+  });
+
   app.all("/mcp", async (c) => {
     let resolved;
     try {
@@ -393,6 +500,26 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
       throw new PolicyError(401, "sign-in link is used or expired; run vault ui again");
     }
     const store = new VaultStore(keyring.backend, await keyring.cryptoFor(link.orgId), link.orgId);
+    if (link.keyPrefix.startsWith(GITHUB_LINK_PREFIX)) {
+      // A GitHub person is an operator of the org for as long as they are listed.
+      const githubId = link.keyPrefix.slice(GITHUB_LINK_PREFIX.length);
+      const person = (await keyring.backend.findGithubPerson({ githubId })).find((p) => p.orgId === link.orgId);
+      if (person == null) throw new PolicyError(401, "this GitHub account is no longer an operator of this org");
+      const generated = randomApiKey("user");
+      const expiresAt = new Date(Date.now() + UI_SESSION_TTL_MS).toISOString();
+      await store.insertKey({
+        plaintext: generated.plaintext,
+        prefix: generated.prefix,
+        type: "user",
+        permission: "full",
+        mode: null,
+        label: `web ui (GitHub @${person.githubLogin})`,
+        scopes: null,
+        expiresAt,
+      });
+      await store.audit({ keyPrefix: generated.prefix, action: "ui_signin", status: "ok", host: `github.com/${person.githubLogin}` });
+      return c.json({ key: generated.plaintext, prefix: generated.prefix, expiresAt }, 201);
+    }
     const parent = await store.findKeyByPrefix(link.keyPrefix);
     if (parent == null) throw new PolicyError(401, "invalid API key");
     assertActiveKey(parent);
@@ -412,6 +539,43 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     });
     await store.audit({ keyPrefix: parent.keyPrefix, action: "ui_signin", status: "ok" });
     return c.json({ key: generated.plaintext, prefix: generated.prefix, expiresAt }, 201);
+  });
+
+  // GitHub accounts that sign in to the web UI as operators of this org.
+  app.get("/v1/people", managePeople, async (c) => {
+    const people = await keyring.backend.listGithubPeople({ orgId: c.get("store").orgId });
+    return c.json({
+      githubSignIn: options.github != null,
+      people: people.map((p) => ({ login: p.githubLogin, githubId: p.githubId, addedBy: p.addedBy, createdAt: p.createdAt })),
+    });
+  });
+
+  app.post("/v1/people", managePeople, async (c) => {
+    const body = await parseBody(addPersonSchema, c.req);
+    const user = await githubUserByLogin(body.login, fetcher);
+    if (user == null) throw new PolicyError(404, `there is no GitHub account named ${body.login}`);
+    const key = c.get("key");
+    const store = c.get("store");
+    const added = await keyring.backend.putGithubPerson({
+      person: {
+        orgId: store.orgId,
+        githubId: user.id,
+        githubLogin: user.login,
+        addedBy: key.keyPrefix,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    await store.audit({ keyPrefix: key.keyPrefix, action: "person_add", status: "ok", host: `github.com/${user.login}` });
+    return c.json({ login: user.login, githubId: user.id }, added ? 201 : 200);
+  });
+
+  app.delete("/v1/people/:login", managePeople, async (c) => {
+    const login = c.req.param("login");
+    const store = c.get("store");
+    if (!(await keyring.backend.deleteGithubPerson({ orgId: store.orgId, githubLogin: login })))
+      throw new PolicyError(404, `${login} is not in this org`);
+    await store.audit({ keyPrefix: c.get("key").keyPrefix, action: "person_remove", status: "ok", host: `github.com/${login}` });
+    return c.json({ removed: login });
   });
 
   // Everything the UI's home page explains: who the caller is, and every

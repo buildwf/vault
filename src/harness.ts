@@ -9,6 +9,7 @@ import { generateMasterKey, type VaultCrypto } from "./crypto.ts";
 import { openMemoryD1 } from "./d1-sqlite.ts";
 import { VaultStore } from "./db.ts";
 import { VaultKeyring } from "./keyring.ts";
+import type { GithubFetch, GithubSignInConfig } from "./github-signin.ts";
 import type { Minter } from "./parents/minter.ts";
 
 export const TEST_BOOTSTRAP_TOKEN = "test-bootstrap-token";
@@ -28,7 +29,9 @@ export async function openTestBackend(): Promise<VaultBackend> {
   return new D1Backend(openMemoryD1(migrationSql));
 }
 
-export async function createTestVault(options: { minter?: Minter } = {}): Promise<{
+export async function createTestVault(
+  options: { minter?: Minter; github?: GithubSignInConfig; githubFetch?: GithubFetch } = {},
+): Promise<{
   env: TestEnv;
   backend: VaultBackend;
   crypto: VaultCrypto;
@@ -51,6 +54,8 @@ export async function createTestVault(options: { minter?: Minter } = {}): Promis
       bootstrapToken: TEST_BOOTSTRAP_TOKEN,
       inactiveMasterKey: generateMasterKey(),
       minter: options.minter,
+      github: options.github,
+      githubFetch: options.githubFetch,
     }),
     masterKey,
   };

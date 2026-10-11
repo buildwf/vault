@@ -5,6 +5,25 @@ For example: `https://shared-vault.buildwithfriends.workers.dev/ui`.
 
 ## Sign in
 
+### With GitHub
+
+Select **Sign in with GitHub** on the sign-in page. This works in any browser, for a GitHub account that an operator added to the org:
+
+```sh
+vault people add GITHUB_LOGIN      # or the "People who sign in with GitHub" form on vault keys
+vault people list
+vault people remove GITHUB_LOGIN --yes
+```
+
+A person you add becomes an operator of your org. They manage everything in it.
+If your GitHub account is in more than one org, the page asks which org to use.
+The session key has the label `web ui (GitHub @LOGIN)` and expires after 12 hours.
+If you remove a person, they cannot sign in again. Sessions they already have last until they expire; revoke them on **vault keys** to end them now.
+
+The button shows only when the vault has a GitHub OAuth app. Refer to [Set up GitHub sign-in](#set-up-github-sign-in).
+
+### With the CLI
+
 Run this command where you are logged in to the vault:
 
 ```sh
@@ -51,3 +70,16 @@ Three more pages open from links that an AI client gives you. Refer to [Use the 
 - Value fields are write-only. The UI hides the text while you type it.
 - The UI shows a new vault key one time only, when you make it.
 - The UI uses the same `/v1` API as the CLI. The same permissions and audit apply.
+
+## Set up GitHub sign-in
+
+1. On GitHub, go to **Settings > Developer settings > OAuth Apps > New OAuth App**. For an org-owned app, use the org's settings.
+   - Homepage URL: your vault, for example `https://shared-vault.buildwithfriends.workers.dev/ui`.
+   - Authorization callback URL: `https://<your vault>/auth/github/callback`.
+2. Select **Generate a new client secret**.
+3. In the Cloudflare dashboard, go to **Secrets Store > Create secret**. Name it `<prefix>_GITHUB_CLIENT_SECRET`, where the prefix is your `VAULT_SECRET_PREFIX` (for example `SHARED_VAULT_GITHUB_CLIENT_SECRET`). Paste the client secret as the value, and set the scope to **Workers**.
+
+4. Put the client id in `.env` as `VAULT_GITHUB_CLIENT_ID`.
+5. Apply the migrations (`bun run migrations:production`) and deploy (`bun run deploy`).
+
+The app asks GitHub for no scopes. The vault reads only the account's id and login, one time, at sign-in.
