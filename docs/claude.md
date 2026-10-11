@@ -67,8 +67,8 @@ To disconnect, revoke that key in `vault keys list` or on the **vault keys** pag
 
 Use this when an agent runs the CLI on a machine that is not yours, for example a cloud container. You do not copy a key.
 
-1. The agent runs `vault login --api-url URL --device`. Run it in the background: it waits up to 10 minutes.
-2. It gives you a link. Open it and sign in as an operator.
+1. The agent runs `vault login --api-url URL --device`. Run it in the background: it waits up to 30 minutes.
+2. It gives you a short link. Open it and sign in as an operator.
 3. The page says **Sign in**, not Connect. Select the environments. Select **Connect**.
 4. The CLI saves a read-only key. Now `vault run` works on that machine.
 

@@ -337,15 +337,26 @@ describe("vault login --device", () => {
 
   /** Runs the CLI's device login against the app; `onWait` acts as the operator. */
   async function login(v: Awaited<ReturnType<typeof setup>>, onWait: (link: URL) => Promise<void>) {
-    let link: URL | undefined;
+    let printed = "";
     const fetch = ((input: string | URL | Request, init?: RequestInit) =>
       v.app.request(String(input), init, v.env)) as typeof globalThis.fetch;
     return deviceLogin(
       HTTPS,
       "Claude cloud",
-      { log: (text: string) => (link = new URL(text.split("\n")[1]!)), error: () => {} },
-      { fetch, sleep: () => onWait(link!), intervalMs: 0 },
+      { log: (text: string) => (printed = text.split("\n")[1]!), error: () => {} },
+      { fetch, sleep: async () => onWait(await expand(v, printed)), intervalMs: 0 },
     );
+  }
+
+  /** Follows the CLI's short link to the authorize URL it stands for. */
+  async function expand(v: Awaited<ReturnType<typeof setup>>, short: string) {
+    expect(short.length).toBeLessThan(150);
+    const response = await v.app.request(short, {}, v.env);
+    expect(response.status).toBe(302);
+    const link = new URL(response.headers.get("Location")!, HTTPS);
+    const authorize = await v.app.request(link.toString(), {}, v.env);
+    expect(authorize.headers.get("Location")).toStartWith("/ui#/connect/");
+    return link;
   }
 
   async function approve(v: Awaited<ReturnType<typeof setup>>, link: URL, scopes = [{ project: "demo", env: "dev" }]) {
@@ -467,5 +478,8 @@ describe("vault login --device", () => {
     const v = await setup();
     expect(await (await v.call("/oauth/device")).text()).toContain("Approved");
     expect(await (await v.call("/oauth/device?error=access_denied")).text()).toContain("Cancelled");
+    const failed = await (await v.call("/oauth/device?error=invalid_request&error_description=<b>PKCE</b>")).text();
+    expect(failed).toContain("&#60;b&#62;PKCE");
+    expect(failed).toContain("new link");
   });
 });
