@@ -736,7 +736,7 @@ export async function deviceLogin(
   apiUrl: string,
   name: string,
   io: typeof DEFAULT_CLI_IO,
-  { fetch = globalThis.fetch, sleep = Bun.sleep, intervalMs = 3000, timeoutMs = 10 * 60 * 1000 } = {},
+  { fetch = globalThis.fetch, sleep = Bun.sleep, intervalMs = 3000, timeoutMs = 30 * 60 * 1000 } = {},
 ): Promise<string> {
   const redirectUri = `${apiUrl}/oauth/device`;
   const registered = await fetch(`${apiUrl}/oauth/register`, {
@@ -748,14 +748,9 @@ export async function deviceLogin(
   const { client_id } = v.parse(v.object({ client_id: v.string() }), await registered.json());
   const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  const link = `${apiUrl}/oauth/authorize?${new URLSearchParams({
-    response_type: "code",
-    client_id,
-    redirect_uri: redirectUri,
-    code_challenge: toBase64Url(new Uint8Array(digest)),
-    code_challenge_method: "S256",
-  })}`;
-  io.log(`ask an operator to open this link, sign in and approve (waiting up to 10 minutes):\n${link}`);
+  // Short, so chat apps pass it through intact; /d/ expands it to /oauth/authorize.
+  const link = `${apiUrl}/d/${toBase64Url(new Uint8Array(digest))}?${new URLSearchParams({ n: name })}`;
+  io.log(`ask an operator to open this link, sign in and approve (waiting up to 30 minutes):\n${link}`);
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const response = await fetch(`${apiUrl}/oauth/token`, {

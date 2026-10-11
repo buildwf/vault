@@ -43,6 +43,7 @@ import {
   approveSchema,
   authenticate,
   bearerChallenge,
+  deviceRedirect,
   oauthMetadata,
   pendingApproval,
   registerSchema,
@@ -305,17 +306,39 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
 
   app.post("/oauth/token", bodyLimit({ maxSize: 65536 }), (c) => token(c, keyring));
 
+  // A device login's short link, which survives chat apps that mangle long
+  // URLs. The client id is deterministic, so it matches the one the CLI polls with.
+  app.get("/d/:challenge", async (c) => {
+    const redirectUri = deviceRedirect(origin(c));
+    const { clientId } = await signClient(keyring.crypto, {
+      client_name: c.req.query("n"),
+      redirect_uris: [redirectUri],
+    });
+    const query = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_challenge: c.req.param("challenge"),
+      code_challenge_method: "S256",
+    });
+    return c.redirect(`/oauth/authorize?${query}`);
+  });
+
   // Where a device login's browser lands; the CLI picks up the approval itself.
-  app.get("/oauth/device", (c) =>
-    c.html(
+  app.get("/oauth/device", (c) => {
+    const error = c.req.query("error");
+    const text =
+      error == null
+        ? "Approved. The CLI finishes signing in by itself; you can close this tab."
+        : error === "access_denied"
+          ? "Cancelled. The CLI was not signed in."
+          : `The CLI was not signed in: ${c.req.query("error_description") ?? error}. Ask it for a new link.`;
+    const escaped = text.replace(/[&<>"]/gu, (ch) => `&#${ch.charCodeAt(0)};`);
+    return c.html(
       `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Vault</title>` +
-        `<p style="font:16px system-ui;margin:2rem">` +
-        (c.req.query("error") == null
-          ? "Approved. The CLI finishes signing in by itself; you can close this tab."
-          : "Cancelled. The CLI was not signed in.") +
-        `</p>`,
-    ),
-  );
+        `<p style="font:16px system-ui;margin:2rem">${escaped}</p>`,
+    );
+  });
 
   app.all("/mcp", async (c) => {
     let resolved;
