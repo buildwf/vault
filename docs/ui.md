@@ -73,13 +73,20 @@ Three more pages open from links that an AI client gives you. Refer to [Use the 
 
 ## Set up GitHub sign-in
 
-1. On GitHub, go to **Settings > Developer settings > OAuth Apps > New OAuth App**. For an org-owned app, use the org's settings.
-   - Homepage URL: your vault, for example `https://shared-vault.buildwithfriends.workers.dev/ui`.
-   - Authorization callback URL: `https://<your vault>/auth/github/callback`.
-2. Select **Generate a new client secret**.
-3. In the Cloudflare dashboard, go to **Secrets Store > Create secret**. Name it `<prefix>_GITHUB_CLIENT_SECRET`, where the prefix is your `VAULT_SECRET_PREFIX` (for example `SHARED_VAULT_GITHUB_CLIENT_SECRET`). Paste the client secret as the value, and set the scope to **Workers**.
+Run this in your checkout, with your Cloudflare login and `.env` in place:
 
-4. Put the client id in `.env` as `VAULT_GITHUB_CLIENT_ID`.
-5. Apply the migrations (`bun run migrations:production`) and deploy (`bun run deploy`).
+```sh
+bun run setup:github-signin https://<your vault host>
+```
 
-The app asks GitHub for no scopes. The vault reads only the account's id and login, one time, at sign-in.
+The command opens GitHub with the app already filled in. Select **Create GitHub App**. The command then:
+
+1. Saves the app's client secret in Secrets Store as `<prefix>_GITHUB_CLIENT_SECRET`. It never prints the secret.
+2. Saves the client id in `.env` as `VAULT_GITHUB_CLIENT_ID`.
+3. Applies the migrations and deploys.
+
+If a step fails, fix it and run the command again. It skips the steps that are done.
+
+The app asks GitHub for no permissions. The vault reads only the account's id and login, one time, at sign-in.
+
+To do it by hand instead, make a GitHub OAuth app whose callback URL is `https://<your vault>/auth/github/callback`, put its client secret in Secrets Store as `<prefix>_GITHUB_CLIENT_SECRET` (scope **Workers**), put its client id in `.env` as `VAULT_GITHUB_CLIENT_ID`, then migrate and deploy.
