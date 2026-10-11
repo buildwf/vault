@@ -17,6 +17,13 @@
  *   (rotated on use; the grant ends after 30 days). Both are stored as hashes,
  *   and the access token works only at `/mcp`, never on `/v1`, so a client
  *   cannot read values: `use_secret` sends them from inside the Worker.
+ * - Device login (`vault login --device`), for a CLI where no browser runs,
+ *   such as an agent in a cloud container. It registers with the redirect URI
+ *   `/oauth/device` and prints the authorize link; an operator approves on the
+ *   same connect page. The code is keyed by the PKCE challenge, so only the
+ *   CLI, which holds the verifier, can poll it out of `/oauth/token`. The CLI
+ *   gets a read-only system key for the picked environments, valid for one
+ *   day, which `vault run` can read values with.
  */
 import type { Context } from "hono";
 import * as v from "valibot";
@@ -35,6 +42,11 @@ const CODE_TTL_MS = 5 * 60 * 1000;
 /** How long a use_secret approval link can be acted on. */
 const PENDING_TTL_MS = 10 * 60 * 1000;
 export const SCOPE = "vault:use";
+export const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+export const DEVICE_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+/** Where a device login's browser lands after the operator answers. */
+export const deviceRedirect = (origin: string) => `${origin}/oauth/device`;
+const deviceCodeHash = (crypto: VaultCrypto, challenge: string) => crypto.sha256(`device\n${challenge}`);
 
 export function oauthMetadata(origin: string) {
   return {
@@ -52,7 +64,7 @@ export function oauthMetadata(origin: string) {
       registration_endpoint: `${origin}/oauth/register`,
       scopes_supported: [SCOPE],
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code", "refresh_token"],
+      grant_types_supported: ["authorization_code", "refresh_token", DEVICE_GRANT],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       authorization_response_iss_parameter_supported: true,
@@ -148,12 +160,15 @@ export async function approve(
     await store.requireEnvironment(scope.project, scope.env);
     if (!scopes.some((s) => s.project === scope.project && s.env === scope.env)) scopes.push(scope);
   }
+  const device = body.redirect_uri === deviceRedirect(origin);
   const code = `vault_oac_${randomSecretValue()}`;
   const orgCrypto = await keyring.cryptoFor(store.orgId);
   const now = new Date();
   await keyring.backend.insertOAuthCode({
     code: {
-      codeHash: await keyring.crypto.sha256(code),
+      codeHash: device
+        ? await deviceCodeHash(keyring.crypto, body.code_challenge)
+        : await keyring.crypto.sha256(code),
       orgId: store.orgId,
       clientId: body.client_id,
       redirectUri: body.redirect_uri,
@@ -165,6 +180,8 @@ export async function approve(
     now: now.toISOString(),
   });
   await store.audit({ keyPrefix: key.keyPrefix, action: "oauth_approve", status: "ok" });
+  // The CLI polls for this code, so it never goes through the browser.
+  if (device) return body.redirect_uri;
   const redirect = new URL(body.redirect_uri);
   redirect.searchParams.set("code", code);
   if (body.state != null) redirect.searchParams.set("state", body.state);
@@ -175,7 +192,12 @@ export async function approve(
 /** An RFC 6749 error from the token endpoint. */
 class TokenError extends Error {
   constructor(
-    readonly code: "invalid_request" | "invalid_grant" | "unsupported_grant_type" | "invalid_client",
+    readonly code:
+      | "invalid_request"
+      | "invalid_grant"
+      | "unsupported_grant_type"
+      | "invalid_client"
+      | "authorization_pending",
     message: string,
   ) {
     super(message);
@@ -253,6 +275,46 @@ async function exchangeCode(keyring: VaultKeyring, form: Record<string, string>)
   return tokens.response;
 }
 
+/** RFC 8628 polling: pending until an operator approves, then a one-day read-only system key, once. */
+async function exchangeDeviceCode(keyring: VaultKeyring, form: Record<string, string>, origin: string) {
+  const verifier = form.device_code ?? "";
+  if (!/^[A-Za-z0-9._~-]{43,128}$/u.test(verifier))
+    throw new TokenError("invalid_request", "device_code must be the PKCE verifier");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const row = await keyring.backend.takeOAuthCode({
+    codeHash: await deviceCodeHash(keyring.crypto, toBase64Url(new Uint8Array(digest))),
+  });
+  if (row == null) throw new TokenError("authorization_pending", "waiting for an operator to approve");
+  if (Date.parse(row.expiresAt) <= Date.now())
+    throw new TokenError("invalid_grant", "the approval expired; log in again");
+  if (row.clientId !== form.client_id || row.redirectUri !== deviceRedirect(origin))
+    throw new TokenError("invalid_grant", "client_id does not match the approval");
+  const client = await readClient(keyring.crypto, row.clientId);
+  if (client == null) throw new TokenError("invalid_client", "unknown OAuth client");
+  const orgCrypto = await keyring.cryptoFor(row.orgId);
+  const store = new VaultStore(keyring.backend, orgCrypto, row.orgId);
+  // SAFETY: `approve` encrypts the JSON of a validated Scope[].
+  const scopes = JSON.parse(await orgCrypto.decrypt(row.scopesEncrypted)) as Scope[];
+  const key = randomApiKey("system");
+  await store.insertKey({
+    plaintext: key.plaintext,
+    prefix: key.prefix,
+    type: "system",
+    permission: "read",
+    mode: "inject",
+    label: `${client.name} (CLI login)`,
+    scopes,
+    expiresAt: new Date(Date.now() + DEVICE_KEY_TTL_MS).toISOString(),
+  });
+  await store.audit({ keyPrefix: row.keyPrefix, action: "oauth_grant", status: "ok" });
+  return {
+    access_token: key.plaintext,
+    token_type: "Bearer",
+    expires_in: DEVICE_KEY_TTL_MS / 1000,
+    scopes,
+  };
+}
+
 async function refresh(keyring: VaultKeyring, form: Record<string, string>) {
   const refreshHash = await keyring.crypto.sha256(form.refresh_token ?? "");
   const grant = await keyring.backend.findOAuthGrant({ refreshHash });
@@ -280,7 +342,9 @@ export async function token(c: Context, keyring: VaultKeyring) {
     let body;
     if (form.grant_type === "authorization_code") body = await exchangeCode(keyring, form);
     else if (form.grant_type === "refresh_token") body = await refresh(keyring, form);
-    else throw new TokenError("unsupported_grant_type", "use authorization_code or refresh_token");
+    else if (form.grant_type === DEVICE_GRANT)
+      body = await exchangeDeviceCode(keyring, form, new URL(c.req.url).origin);
+    else throw new TokenError("unsupported_grant_type", "use authorization_code, refresh_token or device_code");
     return c.json(body, 200, headers);
   } catch (error) {
     if (!(error instanceof TokenError)) throw error;

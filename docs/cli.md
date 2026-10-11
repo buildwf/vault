@@ -23,6 +23,7 @@ The CLI reads these values:
 |---|---|
 | `vault bootstrap --api-url URL` | Make the first operator key. One time only. |
 | `vault login --api-url URL` | Save the URL and a key. |
+| `vault login --api-url URL --device` | Print a link. An operator approves it, and the CLI saves a read-only key for one day. See [device login](claude.md#device-login). |
 | `vault orgs list\|create NAME` | Manage orgs. Platform operators only. |
 | `vault projects list\|create\|delete NAME` | Manage projects. |
 | `vault environments list\|create\|delete NAME` | Manage environments. |

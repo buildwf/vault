@@ -15,6 +15,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { hostname } from "node:os";
 import { parseArgs } from "node:util";
 
 import { serveAgentMcp } from "./agent/cli.ts";
@@ -53,6 +54,7 @@ const options = {
   random: { type: "boolean" },
   "include-revoked": { type: "boolean" },
   print: { type: "boolean" },
+  device: { type: "boolean" },
 } as const;
 const optionTypes = new Map<string, string>(
   Object.entries(options).map(([name, option]) => [name, option.type]),
@@ -137,6 +139,7 @@ export function parseArgv(argv: string[]) {
       random: seen.has("random"),
       includeRevoked: seen.has("include-revoked"),
       print: seen.has("print"),
+      device: seen.has("device"),
       rest,
     },
   };
@@ -227,8 +230,10 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
         return await runHook(flags, io);
       case "login": {
         const apiUrl = flags.apiUrl ?? flags.rest[0] ?? process.env.VAULT_API_URL;
-        if (apiUrl == null) throw new Error("usage: vault login --api-url URL");
-        const apiKey = await readSecretValue(
+        if (apiUrl == null) throw new Error("usage: vault login --api-url URL [--device]");
+        const apiKey = flags.device
+          ? await deviceLogin(apiUrl.replace(/\/+$/u, ""), flags.label ?? `vault CLI on ${hostname()}`, io)
+          : await readSecretValue(
           process.env.VAULT_API_KEY,
           process.stdin,
           process.stdout,
@@ -719,6 +724,61 @@ async function spawnCommand(argv: string[], env: ProcessEnvironment): Promise<nu
   }
 }
 
+const toBase64Url = (bytes: Uint8Array) => bytes.toBase64({ alphabet: "base64url", omitPadding: true });
+
+/**
+ * `vault login --device`, for a CLI with no browser, such as an agent in a
+ * cloud container: print a link, an operator approves it in the web UI, and
+ * the vault hands this CLI a read-only key for the environments they picked.
+ * The PKCE verifier never leaves this process; it is what polling proves.
+ */
+export async function deviceLogin(
+  apiUrl: string,
+  name: string,
+  io: typeof DEFAULT_CLI_IO,
+  { fetch = globalThis.fetch, sleep = Bun.sleep, intervalMs = 3000, timeoutMs = 10 * 60 * 1000 } = {},
+): Promise<string> {
+  const redirectUri = `${apiUrl}/oauth/device`;
+  const registered = await fetch(`${apiUrl}/oauth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_name: name, redirect_uris: [redirectUri] }),
+  });
+  if (!registered.ok) throw new Error(`device login: register failed (${registered.status})`);
+  const { client_id } = v.parse(v.object({ client_id: v.string() }), await registered.json());
+  const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const link = `${apiUrl}/oauth/authorize?${new URLSearchParams({
+    response_type: "code",
+    client_id,
+    redirect_uri: redirectUri,
+    code_challenge: toBase64Url(new Uint8Array(digest)),
+    code_challenge_method: "S256",
+  })}`;
+  io.log(`ask an operator to open this link, sign in and approve (waiting up to 10 minutes):\n${link}`);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await fetch(`${apiUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: verifier,
+        client_id,
+      }).toString(),
+    });
+    const body = v.parse(
+      v.object({ access_token: v.optional(v.string()), error: v.optional(v.string()), error_description: v.optional(v.string()) }),
+      await response.json(),
+    );
+    if (body.access_token != null) return body.access_token;
+    if (body.error !== "authorization_pending")
+      throw new Error(`device login failed: ${body.error_description ?? body.error ?? response.status}`);
+    if (Date.now() >= deadline) throw new Error("device login timed out; run it again");
+    await sleep(intervalMs);
+  }
+}
+
 /**
  * Open the web UI signed in as this login. The URL carries a one-time code,
  * not the key: the page trades it for a session key of its own, so the CLI's
@@ -741,6 +801,7 @@ function helpText(): string {
 
   vault bootstrap --api-url URL [--label LABEL] [--expires-in-days 90]
   vault login --api-url URL                 # hidden API-key prompt
+  vault login --api-url URL --device [--label NAME]   # approve a link instead; 1-day read-only key
   vault mcp                                # agent tools: list names, collect secrets
   vault orgs list|create NAME [--label LABEL] [--expires-in-days 90]   # platform operators
   vault projects list|create NAME|delete NAME --yes
