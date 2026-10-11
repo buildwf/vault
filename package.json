@@ -16,6 +16,7 @@
     "migrations:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000d1d1 --local --persist-to .wrangler/state",
     "migrations:production": "bun scripts/migrations-production.ts",
     "recovery:rehearse": "bun scripts/recovery-rehearsal.ts",
+    "setup:github-signin": "bun scripts/setup-github-signin.ts",
     "master-keys:prepare-rotation": "bun scripts/rotate-master-key.ts prepare --yes",
     "acceptance": "bun scripts/acceptance.ts",
     "acceptance:collection": "bun scripts/collection-acceptance.ts",
