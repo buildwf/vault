@@ -344,6 +344,8 @@ var ACTIONS = {
   project_delete: "deleted a project",
   parent_delete: "deleted a parent key",
   parent_set: "set a parent key",
+  person_add: "added a GitHub sign-in",
+  person_remove: "removed a GitHub sign-in",
   secret_delete: "deleted a secret",
   set: "wrote a secret",
   ui_signin: "signed in to this web UI",
@@ -434,10 +436,19 @@ function signIn() {
   rememberNext();
   var input = h("input", { id: "key", type: "password", autocomplete: "off", spellcheck: "false", required: true });
   var status = h("div");
+  // The GitHub button shows only when this vault has a GitHub app set up.
+  var github = h("div");
+  fetch("/", { cache: "no-store" }).then(function (res) { return res.json(); }).then(function (info) {
+    if (!info || !info.githubSignIn) return;
+    fill(github,
+      h("p", null, h("button", { type: "button", class: "primary", text: "Sign in with GitHub", on: { click: function () { location.href = "/auth/github"; } } })),
+      h("p", { class: "muted", text: "Works for GitHub accounts an operator added on the vault keys page." }));
+  }).catch(function () {});
   return [
     h("h1", { text: "Vault" }),
     RESUMABLE.indexOf(route()[0]) >= 0 ? h("p", { class: "lede", text: "Sign in to continue: an app is asking to use this vault." }) : null,
-    h("p", { class: "lede" }, "Run ", h("code", { text: "vault ui" }), " in a terminal where you are logged in. It opens this page signed in as you."),
+    github,
+    h("p", { class: "muted" }, "Or run ", h("code", { text: "vault ui" }), " in a terminal where you are logged in. It opens this page signed in as you."),
     h("p", { class: "muted", text: "Or paste a vault key. Operator keys manage everything in their org; other keys see what their scopes allow." }),
     h("form", { on: { submit: async function (event) {
       event.preventDefault();
@@ -562,7 +573,8 @@ var views = {
           return dangerButton("revoke", "Revoke " + (k.label || k.keyPrefix) + "? Anything using it stops working.", function () { return api("DELETE", "/v1/keys/" + enc(k.keyPrefix)); });
         } },
       ], keys, "No keys."),
-      h("p", { class: "muted", text: "Keys labelled \"web ui\" are this page's own sessions, made by vault ui. They expire within 12 hours." }),
+      h("p", { class: "muted", text: "Keys labelled \"web ui\" are this page's own sessions, made by vault ui or GitHub sign-in. They expire within 12 hours." }),
+      await peopleSection(),
       adding("Give an app or agent access", "A scoped key reads one environment and nothing else. Hand it to the app as VAULT_API_KEY. An operator key manages the whole org; give those only to people.",
         actionForm([
           h("div", { class: "row" },
@@ -775,6 +787,29 @@ var views = {
   },
 };
 
+/* People: GitHub accounts that sign in to this page as operators of the org. */
+async function peopleSection() {
+  var data = await api("GET", "/v1/people");
+  return [
+    h("h2", { text: "People who sign in with GitHub" }),
+    h("p", { class: "muted", text: data.githubSignIn
+      ? "Each of these GitHub accounts can sign in to this page as an operator of this org, from any browser."
+      : "GitHub sign-in is not set up on this vault yet, so these accounts cannot sign in until it is." }),
+    table([
+      { label: "GitHub account", mono: true, render: function (p) { return "@" + p.login; } },
+      { label: "Added", mono: true, narrow: true, render: function (p) { return when(p.createdAt); } },
+      { label: "", actions: true, render: function (p) {
+        return dangerButton("remove", "Remove @" + p.login + "? They can no longer sign in with GitHub. Sessions they already have last until they expire.", function () { return api("DELETE", "/v1/people/" + enc(p.login)); });
+      } },
+    ], data.people, "Nobody yet."),
+    actionForm([
+      field("GitHub username", textInput("person-login", { maxlength: 39 }), "They become an operator of this org: they manage everything in it."),
+    ], "Add person", async function (form) {
+      await api("POST", "/v1/people", { login: val(form, "person-login").replace(/^@/, "") });
+    }),
+  ];
+}
+
 /* Sign-in can happen in another tab (vault ui opens one), so remember where an
    app was sending the user for ten minutes, and go there after signing in. */
 var NEXT = "vault.next";
@@ -940,37 +975,61 @@ async function parentView(name) {
   ];
 }
 
+/** Trade a one-time sign-in code for a session key, then go where an app was sending us. */
+async function trade(code) {
+  var res = await fetch("/v1/ui/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: code }),
+    cache: "no-store",
+  });
+  var data = await res.json();
+  if (!res.ok) throw new Error(data && data.error ? data.error : "sign-in failed (" + res.status + ")");
+  setKey(data.key);
+  state.overview = null;
+  var next = takeNext();
+  history.replaceState(null, "", location.pathname + (next || "#/"));
+}
+
+function signInFailed(error) {
+  setKey(null);
+  fill(nav);
+  fill(main, signIn());
+  main.querySelector("h1").after(errorLine(error));
+}
+
+/* A GitHub account that operates several orgs gets one code per org. */
+function chooseOrg(choices) {
+  fill(nav);
+  fill(main,
+    h("h1", { text: "Choose an org" }),
+    h("p", { class: "lede", text: "Your GitHub account operates more than one org on this vault. Sign in to one; you can sign out and pick another later." }),
+    h("ul", null, choices.map(function (choice) {
+      return h("li", null, h("button", { type: "button", class: "primary", text: choice[0], on: { click: async function () {
+        try { await trade(choice[1]); render(); } catch (error) { signInFailed(error); }
+      } } }));
+    })),
+    h("p", { class: "muted", text: "These choices work for two minutes." }));
+  document.title = "Choose an org · Vault";
+}
+
 /**
- * "vault ui" opens /ui#signin=CODE. The code works once: trade it for a session
- * key, then drop it from the address bar and history before anything renders.
+ * "vault ui" and GitHub sign-in open /ui#signin=CODE (or #choose=org:CODE,...).
+ * A code works once: drop it from the address bar and history before anything
+ * renders, then trade it for a session key.
  */
 async function start() {
   var match = /^#signin=([0-9a-f]+)$/.exec(location.hash);
-  if (match) {
-    history.replaceState(null, "", location.pathname + "#/");
-    try {
-      var res = await fetch("/v1/ui/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: match[1] }),
-        cache: "no-store",
-      });
-      var data = await res.json();
-      if (!res.ok) throw new Error(data && data.error ? data.error : "sign-in failed (" + res.status + ")");
-      setKey(data.key);
-      state.overview = null;
-      var next = takeNext();
-      if (next) history.replaceState(null, "", location.pathname + next);
-    } catch (error) {
-      setKey(null);
-      fill(nav);
-      fill(main, signIn());
-      main.querySelector(".lede").after(errorLine(error));
-      window.addEventListener("hashchange", function () { render(); });
-      return;
-    }
-  }
+  var choose = /^#choose=([a-z0-9:,-]+)$/.exec(location.hash);
+  if (match || choose) history.replaceState(null, "", location.pathname + "#/");
   window.addEventListener("hashchange", function () { render(); });
+  if (choose) {
+    chooseOrg(choose[1].split(",").map(function (pair) { return pair.split(":"); }));
+    return;
+  }
+  if (match) {
+    try { await trade(match[1]); } catch (error) { signInFailed(error); return; }
+  }
   render();
 }
 start();

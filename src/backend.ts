@@ -120,6 +120,15 @@ export type UiLinkRow = {
   expiresAt: string;
 };
 
+/** A GitHub account that signs in to the web UI as an operator of `orgId`. */
+export type GithubPersonRow = {
+  orgId: string;
+  githubId: string;
+  githubLogin: string;
+  addedBy: string;
+  createdAt: string;
+};
+
 /** A one-time OAuth authorization code, approved by the operator key `keyPrefix`. */
 export type OAuthCodeRow = {
   codeHash: string;
@@ -261,6 +270,15 @@ export interface VaultBackend {
   insertUiLink(input: { link: UiLinkRow; now: string }): Promise<void>;
   /** Deletes the link and returns it, so a code works at most once; null if absent. */
   takeUiLink(input: { codeHash: string }): Promise<UiLinkRow | null>;
+
+  /** Adds the person, or updates the login of one already added; false if updated. */
+  putGithubPerson(input: { person: GithubPersonRow }): Promise<boolean>;
+  /** Sorted by login. */
+  listGithubPeople(input: { orgId: string }): Promise<GithubPersonRow[]>;
+  /** Every org the GitHub account signs in to. */
+  findGithubPerson(input: { githubId: string }): Promise<GithubPersonRow[]>;
+  /** Matches the login case-insensitively; false if absent. */
+  deleteGithubPerson(input: { orgId: string; githubLogin: string }): Promise<boolean>;
 
   /** Inserts the code and deletes codes that expired before `now`. */
   insertOAuthCode(input: { code: OAuthCodeRow; now: string }): Promise<void>;

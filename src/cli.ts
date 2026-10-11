@@ -302,6 +302,8 @@ export async function runCli(argv: string[], io = DEFAULT_CLI_IO): Promise<numbe
         return await runKeys(flags, io);
       case "parents":
         return await runParents(flags, io);
+      case "people":
+        return await runPeople(flags, io);
       case "audit": {
         const page = await session(flags).client.listAudit(
           flags.limit ?? 50,
@@ -386,6 +388,29 @@ async function runOrgs(flags: Flags, io: { log: (value: string) => void }) {
     expiresInDays: flags.expiresInDays,
   });
   io.log(`org ${created.name}; operator key ${created.prefix} (shown once): ${created.key}`);
+  return 0;
+}
+
+async function runPeople(flags: Flags, io: { log: (value: string) => void }) {
+  const sub = flags.rest[0] ?? "list";
+  const client = session(flags).client;
+  if (sub === "list") {
+    const { githubSignIn, people } = await client.listPeople();
+    for (const person of people) io.log(`@${person.login}`);
+    if (!githubSignIn) io.log("(GitHub sign-in is not set up on this vault yet)");
+    return 0;
+  }
+  const login = flags.rest[1]?.replace(/^@/u, "");
+  if (login == null || (sub !== "add" && sub !== "remove"))
+    throw new Error("usage: vault people list|add GITHUB_LOGIN|remove GITHUB_LOGIN --yes");
+  if (sub === "add") {
+    const added = await client.addPerson(login);
+    io.log(`@${added.login} can now sign in to the web UI with GitHub, as an operator of this org`);
+    return 0;
+  }
+  requireYes(flags, "vault people remove");
+  await client.removePerson(login);
+  io.log(`removed @${login}; web UI sessions they already have last until they expire`);
   return 0;
 }
 
@@ -814,6 +839,7 @@ function helpText(): string {
   vault keys rotate PREFIX | revoke PREFIX --yes
   vault parents list|set NAME --provider cloudflare|github --config KEY=VALUE   # value from hidden input or stdin
   vault parents minted NAME [--limit N] | revoke NAME --yes | delete NAME --yes
+  vault people list|add GITHUB_LOGIN|remove GITHUB_LOGIN --yes   # operators who sign in with GitHub
   vault audit [--limit N] [--cursor CURSOR]
   vault ui [--print]                       # open the web UI, signed in as this login
   vault master-keys status|prepare|retire FINGERPRINT --yes

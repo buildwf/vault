@@ -35,12 +35,14 @@ Do not commit `.env`. The repository is public.
 | `VAULT_WORKER_NAME` | No | `bwf-vault` |
 | `VAULT_D1_NAME` | No | `bwf-vault` |
 | `VAULT_SECRET_PREFIX` | No | `BWF_VAULT` |
+| `VAULT_GITHUB_CLIENT_ID` | No | GitHub sign-in is off |
 
 Secrets Store must have these secrets:
 
 - `<prefix>_MASTER_KEY_PRIMARY`
 - `<prefix>_MASTER_KEY_SECONDARY`
 - `<prefix>_BOOTSTRAP_TOKEN`
+- `<prefix>_GITHUB_CLIENT_SECRET`, only when `VAULT_GITHUB_CLIENT_ID` is set. Refer to [Set up GitHub sign-in](ui.md#set-up-github-sign-in).
 
 ## Deploy
 

@@ -5,6 +5,8 @@
  * Secrets Store, selects the active root by `ACTIVE_MASTER_KEY`, opens the
  * D1 backend over the `DB` binding, opens
  * the keyring over it, and builds the Hono application around the result.
+ * When the deploy set `GITHUB_CLIENT_ID`, it also reads the GitHub OAuth app's
+ * secret, and the web UI offers "Sign in with GitHub".
  *
  * A `MasterKeyError` anywhere in that chain answers 500 and logs one structured
  * line. The Worker does not serve with key material or storage it could not
@@ -29,6 +31,7 @@ import { Minter } from "./parents/minter.ts";
 import {
   auditRetentionDays,
   readRuntimeSecret,
+  resolveGithubSignIn,
   resolveMasterKeys,
 } from "./runtime-secrets.ts";
 
@@ -44,6 +47,7 @@ export default {
       return await createApp(keyring, {
         bootstrapToken,
         inactiveMasterKey: masterKeys.inactive,
+        github: await resolveGithubSignIn(env),
       }).fetch(request, env, ctx);
     } catch (error) {
       if (error instanceof MasterKeyError) {

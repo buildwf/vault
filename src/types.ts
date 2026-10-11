@@ -49,6 +49,8 @@ export const auditActionSchema = v.picklist([
   "project_create",
   "project_delete",
   "parent_delete",
+  "person_add",
+  "person_remove",
   "parent_set",
   "route_list",
   "route_put",

@@ -23,6 +23,7 @@ import {
   type RevokeOutcome,
   type ParentRow,
   type SecretRow,
+  type GithubPersonRow,
   type UiLinkRow,
   type VaultBackend,
   type WrapRow,
@@ -115,6 +116,24 @@ function isUniqueConstraintFailure(cause: unknown): boolean {
 
 function isLastUserKeyFailure(cause: unknown): boolean {
   return String(cause).includes(LAST_USER_KEY);
+}
+
+type GithubPersonSqlRow = {
+  org_id: string;
+  github_id: string;
+  github_login: string;
+  added_by: string;
+  created_at: string;
+};
+
+function githubPersonFromSql(row: GithubPersonSqlRow): GithubPersonRow {
+  return {
+    orgId: row.org_id,
+    githubId: row.github_id,
+    githubLogin: row.github_login,
+    addedBy: row.added_by,
+    createdAt: row.created_at,
+  };
 }
 
 export class D1Backend implements VaultBackend {
@@ -727,6 +746,46 @@ export class D1Backend implements VaultBackend {
         )
         .bind(link.codeHash, link.orgId, link.keyPrefix, link.expiresAt),
     ]);
+  }
+
+  async putGithubPerson({ person }: { person: GithubPersonRow }): Promise<boolean> {
+    const existing = await this.db
+      .prepare("SELECT 1 FROM github_people WHERE org_id = ? AND github_id = ?")
+      .bind(person.orgId, person.githubId)
+      .first();
+    await this.db
+      .prepare(
+        `INSERT INTO github_people (org_id, github_id, github_login, added_by, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (org_id, github_id) DO UPDATE SET github_login = excluded.github_login`,
+      )
+      .bind(person.orgId, person.githubId, person.githubLogin, person.addedBy, person.createdAt)
+      .run();
+    return existing == null;
+  }
+
+  async listGithubPeople({ orgId }: { orgId: string }): Promise<GithubPersonRow[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM github_people WHERE org_id = ? ORDER BY lower(github_login)")
+      .bind(orgId)
+      .all<GithubPersonSqlRow>();
+    return results.map(githubPersonFromSql);
+  }
+
+  async findGithubPerson({ githubId }: { githubId: string }): Promise<GithubPersonRow[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM github_people WHERE github_id = ? ORDER BY org_id")
+      .bind(githubId)
+      .all<GithubPersonSqlRow>();
+    return results.map(githubPersonFromSql);
+  }
+
+  async deleteGithubPerson({ orgId, githubLogin }: { orgId: string; githubLogin: string }): Promise<boolean> {
+    const result = await this.db
+      .prepare("DELETE FROM github_people WHERE org_id = ? AND lower(github_login) = lower(?)")
+      .bind(orgId, githubLogin)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
   }
 
   async takeUiLink({ codeHash }: { codeHash: string }): Promise<UiLinkRow | null> {

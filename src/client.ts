@@ -137,6 +137,35 @@ export class VaultClient {
     return this.request("GET", "/v1/orgs", v.looseObject({ orgs: v.array(v.string()) }));
   }
 
+  /** GitHub accounts that sign in to the web UI as operators of this org. */
+  listPeople() {
+    return this.request(
+      "GET",
+      "/v1/people",
+      v.looseObject({
+        githubSignIn: v.boolean(),
+        people: v.array(v.looseObject({ login: v.string(), githubId: v.string(), createdAt: v.string() })),
+      }),
+    );
+  }
+
+  addPerson(login: string) {
+    return this.request(
+      "POST",
+      "/v1/people",
+      v.looseObject({ login: v.string(), githubId: v.string() }),
+      { body: { login } },
+    );
+  }
+
+  removePerson(login: string) {
+    return this.request(
+      "DELETE",
+      `/v1/people/${encodeURIComponent(login)}`,
+      v.looseObject({ removed: v.string() }),
+    );
+  }
+
   /** Creates an org with its first operator key, which is returned once. */
   createOrg(name: string, options: { label?: string; expiresInDays?: number } = {}) {
     return this.request(
