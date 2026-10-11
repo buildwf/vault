@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { z } from "zod";
 
+import { deviceLogin } from "./cli.ts";
 import { authHeaders, bootstrapUser, createTestVault } from "./harness.ts";
 
 type Vault = Awaited<ReturnType<typeof createTestVault>>;
@@ -329,4 +330,142 @@ test("2025-era clients are served statelessly", async () => {
   const text = await called.text();
   expect(called.status).toBe(200);
   expect(text).toContain("API_KEY");
+});
+
+describe("vault login --device", () => {
+  const HTTPS = "https://vault.test";
+
+  /** Runs the CLI's device login against the app; `onWait` acts as the operator. */
+  async function login(v: Awaited<ReturnType<typeof setup>>, onWait: (link: URL) => Promise<void>) {
+    let link: URL | undefined;
+    const fetch = ((input: string | URL | Request, init?: RequestInit) =>
+      v.app.request(String(input), init, v.env)) as typeof globalThis.fetch;
+    return deviceLogin(
+      HTTPS,
+      "Claude cloud",
+      { log: (text: string) => (link = new URL(text.split("\n")[1]!)), error: () => {} },
+      { fetch, sleep: () => onWait(link!), intervalMs: 0 },
+    );
+  }
+
+  async function approve(v: Awaited<ReturnType<typeof setup>>, link: URL, scopes = [{ project: "demo", env: "dev" }]) {
+    const q = link.searchParams;
+    const approved = await v.app.request(
+      `${HTTPS}/v1/oauth/approve`,
+      {
+        method: "POST",
+        headers: authHeaders(v.operator, "application/json"),
+        body: JSON.stringify({
+          client_id: q.get("client_id"),
+          redirect_uri: q.get("redirect_uri"),
+          code_challenge: q.get("code_challenge"),
+          scopes,
+        }),
+      },
+      v.env,
+    );
+    expect(approved.status).toBe(200);
+    // The browser lands on the vault's own page; the code is not in the URL.
+    expect(z.parse(z.object({ redirect: z.string() }), await approved.json()).redirect).toBe(`${HTTPS}/oauth/device`);
+  }
+
+  test("an approved login gets a one-day read-only key that reads values", async () => {
+    const v = await setup();
+    let waits = 0;
+    const key = await login(v, async (link) => {
+      waits += 1;
+      if (waits === 2) await approve(v, link);
+    });
+    expect(waits).toBe(2);
+    const read = await v.app.request(
+      `${HTTPS}/v1/projects/demo/environments/dev/secrets/API_KEY`,
+      { headers: authHeaders(key) },
+      v.env,
+    );
+    expect(read.status).toBe(200);
+    expect(await read.text()).toContain("sk_synthetic_123");
+    const keys = await v.app.request(`${HTTPS}/v1/keys`, { headers: authHeaders(v.operator) }, v.env);
+    const listed = z
+      .parse(z.object({ keys: z.array(z.object({ label: z.string().nullable(), permission: z.string().nullable(), expiresAt: z.string() })) }), await keys.json())
+      .keys.find((k) => k.label === "Claude cloud (CLI login)")!;
+    expect(listed.permission).toBe("read");
+    expect(Date.parse(listed.expiresAt) - Date.now()).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    const write = await v.app.request(
+      `${HTTPS}/v1/projects/demo/environments/dev/secrets`,
+      {
+        method: "PATCH",
+        headers: authHeaders(key, "application/json"),
+        body: JSON.stringify({ set: [{ name: "OTHER", value: "x", kind: "secret" }] }),
+      },
+      v.env,
+    );
+    expect(write.status).toBe(403);
+  });
+
+  test("polling needs the verifier: the challenge in the link is not enough", async () => {
+    const v = await setup();
+    let link: URL | undefined;
+    await expect(
+      login(v, async (l) => {
+        link = l;
+        throw new Error("stop");
+      }),
+    ).rejects.toThrow("stop");
+    await approve(v, link!);
+    const stolen = await v.app.request(
+      `${HTTPS}/oauth/token`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: link!.searchParams.get("code_challenge")!,
+          client_id: link!.searchParams.get("client_id")!,
+        }).toString(),
+      },
+      v.env,
+    );
+    expect(z.parse(z.object({ error: z.string() }), await stolen.json()).error).toBe("authorization_pending");
+  });
+
+  test("only operators can approve, and nothing is issued before they do", async () => {
+    const v = await setup();
+    const reader = await v.app.request(
+      `${HTTPS}/v1/keys`,
+      {
+        method: "POST",
+        headers: authHeaders(v.operator, "application/json"),
+        body: JSON.stringify({ type: "system", scopes: [{ project: "demo", env: "dev" }], permission: "read" }),
+      },
+      v.env,
+    );
+    const { key: systemKey } = z.parse(z.object({ key: z.string() }), await reader.json());
+    await expect(
+      login(v, async (link) => {
+        const q = link.searchParams;
+        const tried = await v.app.request(
+          `${HTTPS}/v1/oauth/approve`,
+          {
+            method: "POST",
+            headers: authHeaders(systemKey, "application/json"),
+            body: JSON.stringify({
+              client_id: q.get("client_id"),
+              redirect_uri: q.get("redirect_uri"),
+              code_challenge: q.get("code_challenge"),
+              scopes: [{ project: "demo", env: "dev" }],
+            }),
+          },
+          v.env,
+        );
+        expect(tried.status).toBe(403);
+        throw new Error("not approved");
+      }),
+    ).rejects.toThrow("not approved");
+  });
+
+  test("the landing page says what happened", async () => {
+    const v = await setup();
+    expect(await (await v.call("/oauth/device")).text()).toContain("Approved");
+    expect(await (await v.call("/oauth/device?error=access_denied")).text()).toContain("Cancelled");
+  });
 });

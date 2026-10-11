@@ -701,12 +701,18 @@ var views = {
       back.searchParams.set("iss", location.origin);
       leave(back.toString());
     } } });
+    /* vault login --device: the CLI gets a read-only key, so it can read values. */
+    var device = client.redirectUri === location.origin + "/oauth/device";
     return [
-      h("h1", { text: "Connect " + client.name }),
-      h("p", { class: "lede", text: client.name + " wants to use secrets from this vault. It sees secret names and can call APIs with the secrets, but the vault sends each request, so it never sees a value. You allow each secret and site the first time it is used." }),
+      h("h1", { text: (device ? "Sign in " : "Connect ") + client.name }),
+      device
+        ? h("p", { class: "lede", text: client.name + " wants to sign in to the vault CLI. It can read the values of every secret in the environments you pick. Approve only if you started this login." })
+        : h("p", { class: "lede", text: client.name + " wants to use secrets from this vault. It sees secret names and can call APIs with the secrets, but the vault sends each request, so it never sees a value. You allow each secret and site the first time it is used." }),
       h("dl", null,
-        h("dt", { text: "returns to" }), h("dd", { text: new URL(client.redirectUri).origin }),
-        h("dt", { text: "lasts" }), h("dd", { text: "30 days. Revoke it any time under vault keys: it is listed as " + client.name + " (MCP connector)." })),
+        h("dt", { text: "returns to" }), h("dd", { text: device ? "the CLI" : new URL(client.redirectUri).origin }),
+        h("dt", { text: "lasts" }), h("dd", { text: device
+          ? "1 day. Revoke it any time under vault keys: it is listed as " + client.name + " (CLI login)."
+          : "30 days. Revoke it any time under vault keys: it is listed as " + client.name + " (MCP connector)." })),
       h("h2", { text: "Which environments" }),
       envs.length > 0 ? boxes : h("p", { class: "muted", text: "No environments yet. Create a project first." }),
       status,

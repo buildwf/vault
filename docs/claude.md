@@ -6,6 +6,7 @@ There are two ways to connect Claude to the vault.
 |---|---|---|
 | Claude Code on your computer | The Claude Code plugin. It runs `vault mcp` and `vault run` on your computer. | Yes, to your computer. |
 | claude.ai, Claude Desktop, Cowork, Managed Agents, or any MCP client that cannot run the CLI | The hosted MCP endpoint at `/mcp`. | No. |
+| An agent that runs the CLI where you are not, such as a Claude Code cloud session | `vault login --device`. You approve a link. | Yes, to that machine, for one day. |
 
 ## The Claude Code plugin
 
@@ -61,3 +62,17 @@ To disconnect, revoke that key in `vault keys list` or on the **vault keys** pag
 - The vault keeps only hashes of codes and tokens.
 - Only operators can connect clients and approve requests.
 - The connect page shows where the browser goes back to. Do not connect a client that you do not know.
+
+## Device login
+
+Use this when an agent runs the CLI on a machine that is not yours, for example a cloud container. You do not copy a key.
+
+1. The agent runs `vault login --api-url URL --device`. Run it in the background: it waits up to 10 minutes.
+2. It gives you a link. Open it and sign in as an operator.
+3. The page says **Sign in**, not Connect. Select the environments. Select **Connect**.
+4. The CLI saves a read-only key. Now `vault run` works on that machine.
+
+The key lasts one day. Then the agent logs in again.
+It is a system key with the label `NAME (CLI login)`. The default name is `vault CLI on HOSTNAME`; set it with `--label`.
+It can read the values of every secret in the environments that you selected. Approve only a login that you started.
+To end it early, revoke that key in `vault keys list` or on the **vault keys** page.

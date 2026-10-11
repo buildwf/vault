@@ -305,6 +305,18 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
 
   app.post("/oauth/token", bodyLimit({ maxSize: 65536 }), (c) => token(c, keyring));
 
+  // Where a device login's browser lands; the CLI picks up the approval itself.
+  app.get("/oauth/device", (c) =>
+    c.html(
+      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Vault</title>` +
+        `<p style="font:16px system-ui;margin:2rem">` +
+        (c.req.query("error") == null
+          ? "Approved. The CLI finishes signing in by itself; you can close this tab."
+          : "Cancelled. The CLI was not signed in.") +
+        `</p>`,
+    ),
+  );
+
   app.all("/mcp", async (c) => {
     let resolved;
     try {
