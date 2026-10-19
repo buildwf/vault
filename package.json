@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build:cli": "bun scripts/build-cli.ts",
+    "build:ui": "bun scripts/build-ui.ts",
     "cli": "bun src/cli.ts",
     "dev": "cf dev",
     "deploy": "cf deploy --mode production",

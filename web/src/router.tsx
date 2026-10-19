@@ -1,16 +1,13 @@
-import { createRouter as createTanStackRouter } from "@tanstack/react-router"
+import { createHashHistory, createRouter } from "@tanstack/react-router"
 import { routeTree } from "./routeTree.gen"
 
+// Hash routes: the Worker and CLI link to /ui#/connect/..., /ui#signin=CODE and so on,
+// and a sign-in code in the fragment never reaches a server log.
 export function getRouter() {
-  const router = createTanStackRouter({
+  return createRouter({
     routeTree,
-
-    scrollRestoration: true,
-    defaultPreload: "intent",
-    defaultPreloadStaleTime: 0,
+    history: typeof window === "undefined" ? undefined : createHashHistory(),
   })
-
-  return router
 }
 
 declare module "@tanstack/react-router" {

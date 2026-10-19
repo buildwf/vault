@@ -8,44 +8,268 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root"
-import { Route as IndexRouteImport } from "./routes/index"
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuditRouteImport } from './routes/audit'
+import { Route as KeysRouteImport } from './routes/keys'
+import { Route as OrgsRouteImport } from './routes/orgs'
+import { Route as ApproveIdRouteImport } from './routes/approve.$id'
+import { Route as ConnectRequestRouteImport } from './routes/connect.$request'
+import { Route as ParentsIndexRouteImport } from './routes/parents.index'
+import { Route as ParentsNameRouteImport } from './routes/parents.$name'
+import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
+import { Route as ProjectsProjectIndexRouteImport } from './routes/projects.$project.index'
+import { Route as ProjectsProjectEnvRouteImport } from './routes/projects.$project.$env'
+import { Route as CollectProjectEnvNameRouteImport } from './routes/collect.$project.$env.$name'
 
 const IndexRoute = IndexRouteImport.update({
-  id: "/",
-  path: "/",
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuditRoute = AuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KeysRoute = KeysRouteImport.update({
+  id: '/keys',
+  path: '/keys',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrgsRoute = OrgsRouteImport.update({
+  id: '/orgs',
+  path: '/orgs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApproveIdRoute = ApproveIdRouteImport.update({
+  id: '/approve/$id',
+  path: '/approve/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectRequestRoute = ConnectRequestRouteImport.update({
+  id: '/connect/$request',
+  path: '/connect/$request',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ParentsIndexRoute = ParentsIndexRouteImport.update({
+  id: '/parents/',
+  path: '/parents/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ParentsNameRoute = ParentsNameRouteImport.update({
+  id: '/parents/$name',
+  path: '/parents/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
+  id: '/projects/',
+  path: '/projects/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsProjectIndexRoute = ProjectsProjectIndexRouteImport.update({
+  id: '/projects/$project/',
+  path: '/projects/$project/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsProjectEnvRoute = ProjectsProjectEnvRouteImport.update({
+  id: '/projects/$project/$env',
+  path: '/projects/$project/$env',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CollectProjectEnvNameRoute = CollectProjectEnvNameRouteImport.update({
+  id: '/collect/$project/$env/$name',
+  path: '/collect/$project/$env/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  "/": typeof IndexRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents/': typeof ParentsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project/': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRoutesByTo {
-  "/": typeof IndexRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents': typeof ParentsIndexRoute
+  '/projects': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  "/": typeof IndexRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents/': typeof ParentsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project/': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: "/"
+  fullPaths:
+    | '/'
+    | '/audit'
+    | '/keys'
+    | '/orgs'
+    | '/approve/$id'
+    | '/connect/$request'
+    | '/parents/$name'
+    | '/parents/'
+    | '/projects/'
+    | '/projects/$project/$env'
+    | '/projects/$project/'
+    | '/collect/$project/$env/$name'
   fileRoutesByTo: FileRoutesByTo
-  to: "/"
-  id: "__root__" | "/"
+  to:
+    | '/'
+    | '/audit'
+    | '/keys'
+    | '/orgs'
+    | '/approve/$id'
+    | '/connect/$request'
+    | '/parents/$name'
+    | '/parents'
+    | '/projects'
+    | '/projects/$project/$env'
+    | '/projects/$project'
+    | '/collect/$project/$env/$name'
+  id:
+    | '__root__'
+    | '/'
+    | '/audit'
+    | '/keys'
+    | '/orgs'
+    | '/approve/$id'
+    | '/connect/$request'
+    | '/parents/$name'
+    | '/parents/'
+    | '/projects/'
+    | '/projects/$project/$env'
+    | '/projects/$project/'
+    | '/collect/$project/$env/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuditRoute: typeof AuditRoute
+  KeysRoute: typeof KeysRoute
+  OrgsRoute: typeof OrgsRoute
+  ApproveIdRoute: typeof ApproveIdRoute
+  ConnectRequestRoute: typeof ConnectRequestRoute
+  ParentsNameRoute: typeof ParentsNameRoute
+  ParentsIndexRoute: typeof ParentsIndexRoute
+  ProjectsIndexRoute: typeof ProjectsIndexRoute
+  ProjectsProjectEnvRoute: typeof ProjectsProjectEnvRoute
+  ProjectsProjectIndexRoute: typeof ProjectsProjectIndexRoute
+  CollectProjectEnvNameRoute: typeof CollectProjectEnvNameRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/": {
-      id: "/"
-      path: "/"
-      fullPath: "/"
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/audit': {
+      id: '/audit'
+      path: '/audit'
+      fullPath: '/audit'
+      preLoaderRoute: typeof AuditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/keys': {
+      id: '/keys'
+      path: '/keys'
+      fullPath: '/keys'
+      preLoaderRoute: typeof KeysRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/orgs': {
+      id: '/orgs'
+      path: '/orgs'
+      fullPath: '/orgs'
+      preLoaderRoute: typeof OrgsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/approve/$id': {
+      id: '/approve/$id'
+      path: '/approve/$id'
+      fullPath: '/approve/$id'
+      preLoaderRoute: typeof ApproveIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect/$request': {
+      id: '/connect/$request'
+      path: '/connect/$request'
+      fullPath: '/connect/$request'
+      preLoaderRoute: typeof ConnectRequestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/parents/': {
+      id: '/parents/'
+      path: '/parents'
+      fullPath: '/parents/'
+      preLoaderRoute: typeof ParentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/parents/$name': {
+      id: '/parents/$name'
+      path: '/parents/$name'
+      fullPath: '/parents/$name'
+      preLoaderRoute: typeof ParentsNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/': {
+      id: '/projects/'
+      path: '/projects'
+      fullPath: '/projects/'
+      preLoaderRoute: typeof ProjectsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/$project/': {
+      id: '/projects/$project/'
+      path: '/projects/$project'
+      fullPath: '/projects/$project/'
+      preLoaderRoute: typeof ProjectsProjectIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/projects/$project/$env': {
+      id: '/projects/$project/$env'
+      path: '/projects/$project/$env'
+      fullPath: '/projects/$project/$env'
+      preLoaderRoute: typeof ProjectsProjectEnvRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/collect/$project/$env/$name': {
+      id: '/collect/$project/$env/$name'
+      path: '/collect/$project/$env/$name'
+      fullPath: '/collect/$project/$env/$name'
+      preLoaderRoute: typeof CollectProjectEnvNameRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -53,14 +277,25 @@ declare module "@tanstack/react-router" {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuditRoute: AuditRoute,
+  KeysRoute: KeysRoute,
+  OrgsRoute: OrgsRoute,
+  ApproveIdRoute: ApproveIdRoute,
+  ConnectRequestRoute: ConnectRequestRoute,
+  ParentsNameRoute: ParentsNameRoute,
+  ParentsIndexRoute: ParentsIndexRoute,
+  ProjectsIndexRoute: ProjectsIndexRoute,
+  ProjectsProjectEnvRoute: ProjectsProjectEnvRoute,
+  ProjectsProjectIndexRoute: ProjectsProjectIndexRoute,
+  CollectProjectEnvNameRoute: CollectProjectEnvNameRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
-import type { getRouter } from "./router.tsx"
-import type { createStart } from "@tanstack/react-start"
-declare module "@tanstack/react-start" {
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
