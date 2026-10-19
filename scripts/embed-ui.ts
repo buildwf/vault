@@ -14,8 +14,15 @@ const web = join(root, "web");
 const dist = join(web, "dist", "client");
 const out = join(root, "src", "ui", "assets.gen.ts");
 
-const build = Bun.spawnSync(["bun", "run", "build"], { cwd: web, stdout: "inherit", stderr: "inherit" });
-if (build.exitCode !== 0) throw new Error("embed-ui: the web UI build failed");
+// web/ is its own package, not a workspace: `cf deploy` refuses to run in a
+// workspace root.
+for (const step of [
+  ["bun", "install", "--frozen-lockfile"],
+  ["bun", "run", "build"],
+]) {
+  const run = Bun.spawnSync(step, { cwd: web, stdout: "inherit", stderr: "inherit" });
+  if (run.exitCode !== 0) throw new Error(`embed-ui: ${step.join(" ")} failed in web/`);
+}
 
 const TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",

@@ -6,9 +6,6 @@
   "bin": {
     "vault": "src/cli.ts"
   },
-  "workspaces": [
-    "web"
-  ],
   "scripts": {
     "build:ui": "bun scripts/embed-ui.ts",
     "build:cli": "bun scripts/build-cli.ts",
