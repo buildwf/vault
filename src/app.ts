@@ -42,7 +42,7 @@ import {
 } from "./github-signin.ts";
 import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
-import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from "./ui/assets.ts";
+import { UI_CSP, UI_FILES } from "./ui/assets.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
 import { bearerFrom, randomApiKey, randomSecretValue } from "./keys.ts";
@@ -268,22 +268,27 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
     });
   });
 
-  // The operator UI is static; it authenticates through the API like any client.
-  const uiAsset = (body: string, type: string) => () =>
-    new Response(body, {
+  // The operator UI is a static SPA built from web/ (scripts/build-ui.ts): the
+  // page at /ui, its hashed files at /assets. It authenticates through the API
+  // like any client.
+  const uiFile = (path: string) => {
+    const file = UI_FILES[path];
+    if (file == null) return null;
+    return new Response(file.base64 ? Uint8Array.from(atob(file.body), (ch) => ch.charCodeAt(0)) : file.body, {
       headers: {
-        "Content-Type": type,
+        "Content-Type": file.type,
         "Content-Security-Policy": UI_CSP,
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "Referrer-Policy": "no-referrer",
-        "Cache-Control": "no-cache",
+        // Hashed asset names never change content; the page itself always revalidates.
+        "Cache-Control": path.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache",
       },
     });
-  app.get("/ui", uiAsset(UI_HTML, "text/html; charset=utf-8"));
+  };
+  app.get("/ui", () => uiFile("index.html")!);
   app.get("/ui/", (c) => c.redirect("/ui"));
-  app.get("/ui/app.css", uiAsset(UI_CSS, "text/css; charset=utf-8"));
-  app.get("/ui/app.js", uiAsset(UI_JS, "text/javascript; charset=utf-8"));
+  app.get("/assets/:file", (c) => uiFile(`assets/${c.req.param("file")}`) ?? c.notFound());
 
   // OAuth and the hosted MCP endpoint (see oauth.ts). Clients may call these
   // from a browser; they carry bearer tokens, never cookies.
