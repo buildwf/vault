@@ -36,7 +36,7 @@ The connection lasts 30 days. Then connect again.
 
 Each connection is a system key with the label `CLIENT (MCP connector)`, for example `Claude (MCP connector)`.
 It can read only the environments that you selected.
-To disconnect, revoke that key in `vault keys list` or on the **vault keys** page.
+To disconnect, revoke that key in `vault keys list` or on the **Access** page of the web UI.
 
 ### Tools
 
@@ -75,4 +75,4 @@ Use this when an agent runs the CLI on a machine that is not yours, for example 
 The key lasts one day. Then the agent logs in again.
 It is a system key with the label `NAME (CLI login)`. The default name is `vault CLI on HOSTNAME`; set it with `--label`.
 It can read the values of every secret in the environments that you selected. Approve only a login that you started.
-To end it early, revoke that key in `vault keys list` or on the **vault keys** page.
+To end it early, revoke that key in `vault keys list` or on the **Access** page of the web UI.

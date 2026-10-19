@@ -1,21 +1,20 @@
-# TanStack Start + shadcn/ui
+# Vault web UI
 
-This is a template for a new TanStack Start project with React, TypeScript, and shadcn/ui.
+The site the vault Worker serves at `/ui`. It is plain [shadcn/ui](https://ui.shadcn.com) on TanStack Start (zinc, Inter, Mira style), built as a single-page app.
 
-## Adding components
+- Pages are in `src/routes`. They live in the URL's `#fragment` (`/ui#/projects`), so links from the CLI and from AI apps never reach a server log.
+- `src/lib/api.ts` talks to the `/v1` API with the vault key the tab signed in with.
+- `src/components/ui` holds stock shadcn components. Add more with `bunx shadcn@latest add NAME` from this folder.
 
-To add components to your app, run the following command:
+## Build
 
-```bash
-npx shadcn@latest add button
+From the repository root:
+
+```sh
+bun install          # also builds the UI
+bun run build:ui     # rebuild after a change
 ```
 
-This will place the ui components in the `components` directory.
+`scripts/embed-ui.ts` builds this folder and embeds the result in the Worker (`src/ui/assets.gen.ts`). `bun run deploy` rebuilds it first.
 
-## Using components
-
-To use the components in your app, import them as follows:
-
-```tsx
-import { Button } from "@/components/ui/button";
-```
+To try a change locally, run `bun run dev` at the root and open `/ui` on the local Worker.
