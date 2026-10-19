@@ -474,12 +474,13 @@ describe("vault login --device", () => {
     ).rejects.toThrow("not approved");
   });
 
-  test("the landing page says what happened", async () => {
+  test("the landing page hands the result to the web UI, without the code", async () => {
     const v = await setup();
-    expect(await (await v.call("/oauth/device")).text()).toContain("Approved");
-    expect(await (await v.call("/oauth/device?error=access_denied")).text()).toContain("Cancelled");
-    const failed = await (await v.call("/oauth/device?error=invalid_request&error_description=<b>PKCE</b>")).text();
-    expect(failed).toContain("&#60;b&#62;PKCE");
-    expect(failed).toContain("new link");
+    const location = async (path: string) => (await v.call(path)).headers.get("Location");
+    expect(await location("/oauth/device?code=secret&state=s")).toBe("/ui#/device");
+    expect(await location("/oauth/device?error=access_denied")).toBe("/ui#/device?error=access_denied");
+    expect(await location("/oauth/device?error=invalid_request&error_description=no+PKCE&code=x")).toBe(
+      "/ui#/device?error=invalid_request&error_description=no+PKCE",
+    );
   });
 });

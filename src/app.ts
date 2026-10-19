@@ -42,7 +42,7 @@ import {
 } from "./github-signin.ts";
 import { Minter, PARENT_NAME, parseParent } from "./parents/minter.ts";
 import { timingSafeStringEqual } from "./crypto.ts";
-import { UI_CSP, UI_CSS, UI_HTML, UI_JS } from "./ui/assets.ts";
+import { UI_CSP, uiFile } from "./ui/assets.ts";
 import { VaultStore } from "./db.ts";
 import type { VaultKeyring } from "./keyring.ts";
 import { bearerFrom, randomApiKey, randomSecretValue } from "./keys.ts";
@@ -269,21 +269,23 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   // The operator UI is static; it authenticates through the API like any client.
-  const uiAsset = (body: string, type: string) => () =>
-    new Response(body, {
+  const uiAsset = (c: { req: { path: string }; notFound: () => Response | Promise<Response> }) => {
+    const file = uiFile(c.req.path);
+    if (file == null) return c.notFound();
+    return new Response(file.body, {
       headers: {
-        "Content-Type": type,
+        "Content-Type": file.type,
         "Content-Security-Policy": UI_CSP,
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
         "Referrer-Policy": "no-referrer",
-        "Cache-Control": "no-cache",
+        "Cache-Control": file.immutable ? "public, max-age=31536000, immutable" : "no-cache",
       },
     });
-  app.get("/ui", uiAsset(UI_HTML, "text/html; charset=utf-8"));
+  };
+  app.get("/ui", uiAsset);
   app.get("/ui/", (c) => c.redirect("/ui"));
-  app.get("/ui/app.css", uiAsset(UI_CSS, "text/css; charset=utf-8"));
-  app.get("/ui/app.js", uiAsset(UI_JS, "text/javascript; charset=utf-8"));
+  app.get("/ui/*", uiAsset);
 
   // OAuth and the hosted MCP endpoint (see oauth.ts). Clients may call these
   // from a browser; they carry bearer tokens, never cookies.
@@ -369,19 +371,15 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   // Where a device login's browser lands; the CLI picks up the approval itself.
+  // The UI says how it went. The code stays behind: the CLI never needs it here.
   app.get("/oauth/device", (c) => {
-    const error = c.req.query("error");
-    const text =
-      error == null
-        ? "Approved. The CLI finishes signing in by itself; you can close this tab."
-        : error === "access_denied"
-          ? "Cancelled. The CLI was not signed in."
-          : `The CLI was not signed in: ${c.req.query("error_description") ?? error}. Ask it for a new link.`;
-    const escaped = text.replace(/[&<>"]/gu, (ch) => `&#${ch.charCodeAt(0)};`);
-    return c.html(
-      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Vault</title>` +
-        `<p style="font:16px system-ui;margin:2rem">${escaped}</p>`,
-    );
+    const result = new URLSearchParams();
+    for (const name of ["error", "error_description"]) {
+      const value = c.req.query(name);
+      if (value != null) result.set(name, value);
+    }
+    c.header("Cache-Control", "no-store");
+    return c.redirect(`/ui#/device${result.size > 0 ? `?${result}` : ""}`);
   });
 
   // Sign in with GitHub. GitHub says who the person is; `github_people` says

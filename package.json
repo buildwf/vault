@@ -6,12 +6,16 @@
   "bin": {
     "vault": "src/cli.ts"
   },
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
+    "build:ui": "bun scripts/embed-ui.ts",
     "build:cli": "bun scripts/build-cli.ts",
     "cli": "bun src/cli.ts",
-    "dev": "cf dev",
-    "deploy": "cf deploy --mode production",
-    "deploy:dry-run": "cf deploy --mode production --dry-run",
+    "dev": "bun run build:ui && cf dev",
+    "deploy": "bun run build:ui && cf deploy --mode production",
+    "deploy:dry-run": "bun run build:ui && cf deploy --mode production --dry-run",
     "install:cli": "bun run build:cli && bun scripts/install-cli.ts",
     "migrations:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000d1d1 --local --persist-to .wrangler/state",
     "migrations:production": "bun scripts/migrations-production.ts",
@@ -23,7 +27,8 @@
     "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
     "test": "bun test src",
     "types": "cf workers types",
-    "uninstall:cli": "bun scripts/uninstall-cli.ts"
+    "uninstall:cli": "bun scripts/uninstall-cli.ts",
+    "postinstall": "bun scripts/embed-ui.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.2.0",
