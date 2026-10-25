@@ -3,6 +3,8 @@
 The Worker serves a web UI at `/ui`.
 For example: `https://shared-vault.buildwithfriends.workers.dev/ui`.
 
+The UI is built from `web/` with stock shadcn/ui components. `bun install` and `bun run deploy` build it; refer to [web/README.md](../web/README.md).
+
 ## Sign in
 
 ### With GitHub
@@ -39,10 +41,10 @@ Session keys show in `vault keys list` with the label `web ui (...)`.
 
 You can also paste a vault key on the sign-in page.
 
-The browser keeps the key in the tab only. It removes the key when you close the tab or select **sign out**.
+The browser keeps the key in the tab only. It removes the key when you close the tab or select **Sign out**.
 
 An operator key (`user`) can use all pages.
-An operator key of the platform org also sees **orgs**.
+An operator key of the platform org also sees **Orgs**.
 A system key sees only the environments in its scopes.
 
 ## Pages
@@ -60,9 +62,9 @@ Three more pages open from links that an AI client gives you. Refer to [Use the 
 
 | Page | You can |
 |---|---|
-| connect | Let an MCP client, for example Claude, use some environments. |
-| approve | Let a connected client send a secret to a host. |
-| collect | Type a secret that an AI asked for. |
+| Connect | Let an MCP client, for example Claude, use some environments. |
+| Approve | Let a connected client send a secret to a host. |
+| Collect | Type a secret that an AI asked for. |
 
 ## Rules
 

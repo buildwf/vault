@@ -64,6 +64,7 @@ function Keys() {
       <Section title="Give an app or agent access" description="A scoped key reads one environment and nothing else. Give operator keys only to people.">
         <ActionForm
           submit="Create key"
+          onReset={() => setType("system")}
           shown={(created: { prefix: string; key: string }) => <OnceKey title={`New key ${created.prefix}`} value={created.key} />}
           onSubmit={(data) => {
             const body: Record<string, unknown> = { type, expiresInDays: Number(data.get("days")) || 90 }

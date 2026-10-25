@@ -374,19 +374,15 @@ export function createApp(keyring: VaultKeyring, options: AppOptions): Hono<AppE
   });
 
   // Where a device login's browser lands; the CLI picks up the approval itself.
+  // The UI says how it went. The code stays behind: the CLI never needs it here.
   app.get("/oauth/device", (c) => {
-    const error = c.req.query("error");
-    const text =
-      error == null
-        ? "Approved. The CLI finishes signing in by itself; you can close this tab."
-        : error === "access_denied"
-          ? "Cancelled. The CLI was not signed in."
-          : `The CLI was not signed in: ${c.req.query("error_description") ?? error}. Ask it for a new link.`;
-    const escaped = text.replace(/[&<>"]/gu, (ch) => `&#${ch.charCodeAt(0)};`);
-    return c.html(
-      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Vault</title>` +
-        `<p style="font:16px system-ui;margin:2rem">${escaped}</p>`,
-    );
+    const result = new URLSearchParams();
+    for (const name of ["error", "error_description"]) {
+      const value = c.req.query(name);
+      if (value != null) result.set(name, value);
+    }
+    c.header("Cache-Control", "no-store");
+    return c.redirect(`/ui#/device${result.size > 0 ? `?${result}` : ""}`);
   });
 
   // Sign in with GitHub. GitHub says who the person is; `github_people` says

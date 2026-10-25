@@ -78,6 +78,7 @@ function EnvironmentPage() {
       <Section title="Add or replace a secret" description="Saving a name that exists replaces its value.">
         <ActionForm
           submit="Save secret"
+          onReset={() => setKind("secret")}
           onSubmit={async (data) => {
             const item: Record<string, unknown> = { name: String(data.get("name")).trim(), kind }
             if (random) item.random = true

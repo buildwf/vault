@@ -12,9 +12,11 @@ describe("operator ui", () => {
     const { app, env } = await createTestVault();
     const script = Object.keys(UI_FILES).find((path) => path.endsWith(".js"))!;
     const font = Object.keys(UI_FILES).find((path) => path.endsWith(".woff2"))!;
+    const style = Object.keys(UI_FILES).find((path) => path.endsWith(".css"))!;
     for (const [path, type] of [
       ["/ui", "text/html"],
       [`/${script}`, "text/javascript"],
+      [`/${style}`, "text/css"],
       [`/${font}`, "font/woff2"],
     ] as const) {
       const response = await app.request(path, {}, env);
@@ -25,6 +27,13 @@ describe("operator ui", () => {
       expect(response.headers.get("X-Frame-Options")).toBe("DENY");
     }
     expect((await app.request("/assets/missing.js", {}, env)).status).toBe(404);
+  });
+
+  test("the shell loads its scripts and styles from /assets", async () => {
+    const { app, env } = await createTestVault();
+    const html = await (await app.request("/ui", {}, env)).text();
+    expect(html).toContain('src="/assets/');
+    expect(html).toContain('href="/assets/');
   });
 
   test("the UI never writes API data as HTML", () => {

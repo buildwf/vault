@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuditRouteImport } from './routes/audit'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as KeysRouteImport } from './routes/keys'
 import { Route as OrgsRouteImport } from './routes/orgs'
 import { Route as ApproveIdRouteImport } from './routes/approve.$id'
@@ -30,6 +31,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuditRoute = AuditRouteImport.update({
   id: '/audit',
   path: '/audit',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const KeysRoute = KeysRouteImport.update({
@@ -86,6 +92,7 @@ const CollectProjectEnvNameRoute = CollectProjectEnvNameRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
+  '/device': typeof DeviceRoute
   '/keys': typeof KeysRoute
   '/orgs': typeof OrgsRoute
   '/approve/$id': typeof ApproveIdRoute
@@ -100,6 +107,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
+  '/device': typeof DeviceRoute
   '/keys': typeof KeysRoute
   '/orgs': typeof OrgsRoute
   '/approve/$id': typeof ApproveIdRoute
@@ -115,6 +123,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/audit': typeof AuditRoute
+  '/device': typeof DeviceRoute
   '/keys': typeof KeysRoute
   '/orgs': typeof OrgsRoute
   '/approve/$id': typeof ApproveIdRoute
@@ -131,6 +140,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/audit'
+    | '/device'
     | '/keys'
     | '/orgs'
     | '/approve/$id'
@@ -145,6 +155,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/audit'
+    | '/device'
     | '/keys'
     | '/orgs'
     | '/approve/$id'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/audit'
+    | '/device'
     | '/keys'
     | '/orgs'
     | '/approve/$id'
@@ -174,6 +186,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuditRoute: typeof AuditRoute
+  DeviceRoute: typeof DeviceRoute
   KeysRoute: typeof KeysRoute
   OrgsRoute: typeof OrgsRoute
   ApproveIdRoute: typeof ApproveIdRoute
@@ -200,6 +213,13 @@ declare module '@tanstack/react-router' {
       path: '/audit'
       fullPath: '/audit'
       preLoaderRoute: typeof AuditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/keys': {
@@ -278,6 +298,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuditRoute: AuditRoute,
+  DeviceRoute: DeviceRoute,
   KeysRoute: KeysRoute,
   OrgsRoute: OrgsRoute,
   ApproveIdRoute: ApproveIdRoute,

@@ -170,11 +170,13 @@ export function useAction<R = unknown>() {
 export function ActionForm<R>({
   submit,
   onSubmit,
+  onReset,
   children,
   shown,
 }: {
   submit: string
   onSubmit: (data: FormData) => Promise<R>
+  onReset?: () => void
   children: React.ReactNode
   shown?: (result: R) => React.ReactNode
 }) {
@@ -182,6 +184,7 @@ export function ActionForm<R>({
   return (
     <form
       className="flex flex-col gap-4"
+      onReset={onReset}
       onSubmit={async (event) => {
         event.preventDefault()
         const form = event.currentTarget

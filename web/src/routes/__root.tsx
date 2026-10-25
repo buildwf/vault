@@ -8,6 +8,7 @@ import {
   redirect,
   useRouteContext,
   useRouter,
+  useRouterState,
 } from "@tanstack/react-router"
 
 import appCss from "../styles.css?url"
@@ -58,9 +59,9 @@ export const Route = createRootRoute({
     links: [{ rel: "stylesheet", href: appCss }],
   }),
   // One request says who you are and everything you can see; every page uses it.
-  beforeLoad: async (): Promise<{ overview: Overview }> => {
+  beforeLoad: async ({ location }): Promise<{ overview: Overview }> => {
     // The build prerenders an empty shell; Layout reloads in the browser.
-    if (typeof window === "undefined") return { overview: null as never }
+    if (typeof window === "undefined" || location.pathname === "/device") return { overview: null as never }
     if (orgChoices) throw new SignInNeeded()
     if (signinCode) {
       const code = signinCode
@@ -145,9 +146,11 @@ function Frame({ children, nav }: { children: React.ReactNode; nav?: React.React
 function Layout() {
   const overview = useOverview()
   const router = useRouter()
+  const device = useRouterState({ select: (state) => state.location.pathname === "/device" })
   useEffect(() => {
-    if (!overview) router.invalidate()
-  }, [overview, router])
+    if (!overview && !device) router.invalidate()
+  }, [overview, router, device])
+  if (device) return <Outlet />
   if (!overview) return null
   const operator = overview.key.type === "user"
   const items: [string, string][] = [

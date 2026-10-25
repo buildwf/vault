@@ -17,12 +17,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      # Installing also builds the web UI into src/ui/assets.ts.
       - run: bun install --frozen-lockfile
       - name: Typecheck (Worker, browser)
         run: |
           bun run types
           bunx tsc --noEmit
           bunx tsc --noEmit -p tsconfig.browser.json
+      - name: Typecheck (web UI)
+        working-directory: web
+        run: bunx tsc --noEmit
       - name: Unit tests
         run: bun run test
       - name: Local workerd + D1 acceptance
