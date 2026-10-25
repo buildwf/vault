@@ -68,7 +68,7 @@ export const Route = createRootRoute({
       try {
         await trade(code)
         const next = takeNext()
-        if (next) throw redirect({ href: next.slice(1) })
+        if (next) throw redirect({ to: next.slice(1) })
       } catch (error) {
         if (!(error instanceof Error)) throw error
         signinError = error

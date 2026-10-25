@@ -23,6 +23,7 @@
     "acceptance:collection": "bun scripts/collection-acceptance.ts",
     "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
     "test": "bun test src",
+    "test:ui": "bun test scripts/ui-resume.test.ts",
     "types": "cf workers types",
     "uninstall:cli": "bun scripts/uninstall-cli.ts"
   },
