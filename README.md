@@ -342,6 +342,14 @@ bun run test
 bun run acceptance
 ```
 
+To check sign-in resumes in the built UI (with synthetic API responses):
+
+```sh
+bun run build:ui
+bunx playwright install chromium
+bun run test:ui
+```
+
 `acceptance` starts real local workerd + D1 state, bootstraps it, writes and
 decrypts a synthetic secret, verifies audit evidence, and removes the temporary
 state. `bun run recovery:rehearse` proves the production restore path; see

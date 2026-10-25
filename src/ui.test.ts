@@ -2,17 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
 import { authHeaders, bootstrapUser, createTestVault } from "./harness.ts";
-import { UI_FILES } from "./ui/assets.gen.ts";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { UI_FILES } from "./ui/assets.ts";
 
 describe("operator ui", () => {
   test("serves the page and its assets without a key, under a strict CSP", async () => {
     const { app, env } = await createTestVault();
     const script = Object.keys(UI_FILES).find((path) => path.endsWith(".js"))!;
+    const font = Object.keys(UI_FILES).find((path) => path.endsWith(".woff2"))!;
     const style = Object.keys(UI_FILES).find((path) => path.endsWith(".css"))!;
     for (const [path, type] of [
       ["/ui", "text/html"],
-      [style, "text/css"],
-      [script, "text/javascript"],
+      [`/${script}`, "text/javascript"],
+      [`/${style}`, "text/css"],
+      [`/${font}`, "font/woff2"],
     ] as const) {
       const response = await app.request(path, {}, env);
       expect(response.status).toBe(200);
@@ -21,20 +26,27 @@ describe("operator ui", () => {
       expect(response.headers.get("Content-Security-Policy")).not.toContain("'unsafe-eval'");
       expect(response.headers.get("X-Frame-Options")).toBe("DENY");
     }
-    expect((await app.request("/ui/nope.js", {}, env)).status).toBe(404);
+    expect((await app.request("/assets/missing.js", {}, env)).status).toBe(404);
   });
 
-  test("the shell loads its scripts and styles from /ui", async () => {
+  test("the shell loads its scripts and styles from /assets", async () => {
     const { app, env } = await createTestVault();
     const html = await (await app.request("/ui", {}, env)).text();
-    expect(html).toContain('src="/ui/assets/');
-    expect(html).toContain('href="/ui/assets/');
+    expect(html).toContain('src="/assets/');
+    expect(html).toContain('href="/assets/');
   });
 
-  test("the scripts never ask for secret values", () => {
-    const scripts = Object.entries(UI_FILES).filter(([path]) => path.endsWith(".js"));
-    expect(scripts.length).toBeGreaterThan(0);
-    for (const [, file] of scripts) {
+  test("the UI never writes API data as HTML", () => {
+    const src = join(import.meta.dir, "../web/src");
+    for (const name of readdirSync(src, { recursive: true }) as string[]) {
+      if (!/\.tsx?$/u.test(name)) continue;
+      expect(readFileSync(join(src, name), "utf8")).not.toContain("dangerouslySetInnerHTML");
+    }
+  });
+
+  test("the UI never asks for secret values", () => {
+    for (const file of Object.values(UI_FILES)) {
+      if (file.base64) continue;
       expect(file.body).not.toContain("show=1");
       expect(file.body).not.toContain("export=1");
     }

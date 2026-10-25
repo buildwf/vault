@@ -7,5 +7,4 @@ node_modules/
 .cloudflare/
 dist/
 !.env.example
-src/ui/assets.gen.ts
 web/.tanstack/

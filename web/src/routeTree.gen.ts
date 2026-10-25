@@ -9,31 +9,28 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as AppRouteImport } from './routes/_app'
-import { Route as ChooseRouteImport } from './routes/choose'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuditRouteImport } from './routes/audit'
 import { Route as DeviceRouteImport } from './routes/device'
-import { Route as SigninRouteImport } from './routes/signin'
-import { Route as SigningInRouteImport } from './routes/signing-in'
-import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as AppAuditRouteImport } from './routes/_app/audit'
-import { Route as AppKeysRouteImport } from './routes/_app/keys'
-import { Route as AppOrgsRouteImport } from './routes/_app/orgs'
-import { Route as AppApproveIdRouteImport } from './routes/_app/approve.$id'
-import { Route as AppConnectRequestRouteImport } from './routes/_app/connect.$request'
-import { Route as AppParentsIndexRouteImport } from './routes/_app/parents/index'
-import { Route as AppParentsNameRouteImport } from './routes/_app/parents/$name'
-import { Route as AppProjectsIndexRouteImport } from './routes/_app/projects/index'
-import { Route as AppProjectsProjectIndexRouteImport } from './routes/_app/projects/$project/index'
-import { Route as AppProjectsProjectEnvRouteImport } from './routes/_app/projects/$project/$env'
-import { Route as AppCollectProjectEnvNameRouteImport } from './routes/_app/collect.$project.$env.$name'
+import { Route as KeysRouteImport } from './routes/keys'
+import { Route as OrgsRouteImport } from './routes/orgs'
+import { Route as ApproveIdRouteImport } from './routes/approve.$id'
+import { Route as ConnectRequestRouteImport } from './routes/connect.$request'
+import { Route as ParentsIndexRouteImport } from './routes/parents.index'
+import { Route as ParentsNameRouteImport } from './routes/parents.$name'
+import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
+import { Route as ProjectsProjectIndexRouteImport } from './routes/projects.$project.index'
+import { Route as ProjectsProjectEnvRouteImport } from './routes/projects.$project.$env'
+import { Route as CollectProjectEnvNameRouteImport } from './routes/collect.$project.$env.$name'
 
-const AppRoute = AppRouteImport.update({
-  id: '/_app',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ChooseRoute = ChooseRouteImport.update({
-  id: '/choose',
-  path: '/choose',
+const AuditRoute = AuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DeviceRoute = DeviceRouteImport.update({
@@ -41,143 +38,109 @@ const DeviceRoute = DeviceRouteImport.update({
   path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SigninRoute = SigninRouteImport.update({
-  id: '/signin',
-  path: '/signin',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SigningInRoute = SigningInRouteImport.update({
-  id: '/signing-in',
-  path: '/signing-in',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AppIndexRoute = AppIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppAuditRoute = AppAuditRouteImport.update({
-  id: '/audit',
-  path: '/audit',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppKeysRoute = AppKeysRouteImport.update({
+const KeysRoute = KeysRouteImport.update({
   id: '/keys',
   path: '/keys',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppOrgsRoute = AppOrgsRouteImport.update({
+const OrgsRoute = OrgsRouteImport.update({
   id: '/orgs',
   path: '/orgs',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppApproveIdRoute = AppApproveIdRouteImport.update({
+const ApproveIdRoute = ApproveIdRouteImport.update({
   id: '/approve/$id',
   path: '/approve/$id',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppConnectRequestRoute = AppConnectRequestRouteImport.update({
+const ConnectRequestRoute = ConnectRequestRouteImport.update({
   id: '/connect/$request',
   path: '/connect/$request',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppParentsIndexRoute = AppParentsIndexRouteImport.update({
+const ParentsIndexRoute = ParentsIndexRouteImport.update({
   id: '/parents/',
   path: '/parents/',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppParentsNameRoute = AppParentsNameRouteImport.update({
+const ParentsNameRoute = ParentsNameRouteImport.update({
   id: '/parents/$name',
   path: '/parents/$name',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppProjectsIndexRoute = AppProjectsIndexRouteImport.update({
+const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   id: '/projects/',
   path: '/projects/',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppProjectsProjectIndexRoute = AppProjectsProjectIndexRouteImport.update({
+const ProjectsProjectIndexRoute = ProjectsProjectIndexRouteImport.update({
   id: '/projects/$project/',
   path: '/projects/$project/',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppProjectsProjectEnvRoute = AppProjectsProjectEnvRouteImport.update({
+const ProjectsProjectEnvRoute = ProjectsProjectEnvRouteImport.update({
   id: '/projects/$project/$env',
   path: '/projects/$project/$env',
-  getParentRoute: () => AppRoute,
+  getParentRoute: () => rootRouteImport,
 } as any)
-const AppCollectProjectEnvNameRoute =
-  AppCollectProjectEnvNameRouteImport.update({
-    id: '/collect/$project/$env/$name',
-    path: '/collect/$project/$env/$name',
-    getParentRoute: () => AppRoute,
-  } as any)
+const CollectProjectEnvNameRoute = CollectProjectEnvNameRouteImport.update({
+  id: '/collect/$project/$env/$name',
+  path: '/collect/$project/$env/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof AppIndexRoute
-  '/choose': typeof ChooseRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/device': typeof DeviceRoute
-  '/signin': typeof SigninRoute
-  '/signing-in': typeof SigningInRoute
-  '/audit': typeof AppAuditRoute
-  '/keys': typeof AppKeysRoute
-  '/orgs': typeof AppOrgsRoute
-  '/approve/$id': typeof AppApproveIdRoute
-  '/connect/$request': typeof AppConnectRequestRoute
-  '/parents/$name': typeof AppParentsNameRoute
-  '/parents/': typeof AppParentsIndexRoute
-  '/projects/': typeof AppProjectsIndexRoute
-  '/projects/$project/$env': typeof AppProjectsProjectEnvRoute
-  '/projects/$project/': typeof AppProjectsProjectIndexRoute
-  '/collect/$project/$env/$name': typeof AppCollectProjectEnvNameRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents/': typeof ParentsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project/': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRoutesByTo {
-  '/choose': typeof ChooseRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/device': typeof DeviceRoute
-  '/signin': typeof SigninRoute
-  '/signing-in': typeof SigningInRoute
-  '/audit': typeof AppAuditRoute
-  '/keys': typeof AppKeysRoute
-  '/orgs': typeof AppOrgsRoute
-  '/': typeof AppIndexRoute
-  '/approve/$id': typeof AppApproveIdRoute
-  '/connect/$request': typeof AppConnectRequestRoute
-  '/parents/$name': typeof AppParentsNameRoute
-  '/parents': typeof AppParentsIndexRoute
-  '/projects': typeof AppProjectsIndexRoute
-  '/projects/$project/$env': typeof AppProjectsProjectEnvRoute
-  '/projects/$project': typeof AppProjectsProjectIndexRoute
-  '/collect/$project/$env/$name': typeof AppCollectProjectEnvNameRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents': typeof ParentsIndexRoute
+  '/projects': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/_app': typeof AppRouteWithChildren
-  '/choose': typeof ChooseRoute
+  '/': typeof IndexRoute
+  '/audit': typeof AuditRoute
   '/device': typeof DeviceRoute
-  '/signin': typeof SigninRoute
-  '/signing-in': typeof SigningInRoute
-  '/_app/audit': typeof AppAuditRoute
-  '/_app/keys': typeof AppKeysRoute
-  '/_app/orgs': typeof AppOrgsRoute
-  '/_app/': typeof AppIndexRoute
-  '/_app/approve/$id': typeof AppApproveIdRoute
-  '/_app/connect/$request': typeof AppConnectRequestRoute
-  '/_app/parents/$name': typeof AppParentsNameRoute
-  '/_app/parents/': typeof AppParentsIndexRoute
-  '/_app/projects/': typeof AppProjectsIndexRoute
-  '/_app/projects/$project/$env': typeof AppProjectsProjectEnvRoute
-  '/_app/projects/$project/': typeof AppProjectsProjectIndexRoute
-  '/_app/collect/$project/$env/$name': typeof AppCollectProjectEnvNameRoute
+  '/keys': typeof KeysRoute
+  '/orgs': typeof OrgsRoute
+  '/approve/$id': typeof ApproveIdRoute
+  '/connect/$request': typeof ConnectRequestRoute
+  '/parents/$name': typeof ParentsNameRoute
+  '/parents/': typeof ParentsIndexRoute
+  '/projects/': typeof ProjectsIndexRoute
+  '/projects/$project/$env': typeof ProjectsProjectEnvRoute
+  '/projects/$project/': typeof ProjectsProjectIndexRoute
+  '/collect/$project/$env/$name': typeof CollectProjectEnvNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/choose'
-    | '/device'
-    | '/signin'
-    | '/signing-in'
     | '/audit'
+    | '/device'
     | '/keys'
     | '/orgs'
     | '/approve/$id'
@@ -190,14 +153,11 @@ export interface FileRouteTypes {
     | '/collect/$project/$env/$name'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/choose'
-    | '/device'
-    | '/signin'
-    | '/signing-in'
+    | '/'
     | '/audit'
+    | '/device'
     | '/keys'
     | '/orgs'
-    | '/'
     | '/approve/$id'
     | '/connect/$request'
     | '/parents/$name'
@@ -208,47 +168,51 @@ export interface FileRouteTypes {
     | '/collect/$project/$env/$name'
   id:
     | '__root__'
-    | '/_app'
-    | '/choose'
+    | '/'
+    | '/audit'
     | '/device'
-    | '/signin'
-    | '/signing-in'
-    | '/_app/audit'
-    | '/_app/keys'
-    | '/_app/orgs'
-    | '/_app/'
-    | '/_app/approve/$id'
-    | '/_app/connect/$request'
-    | '/_app/parents/$name'
-    | '/_app/parents/'
-    | '/_app/projects/'
-    | '/_app/projects/$project/$env'
-    | '/_app/projects/$project/'
-    | '/_app/collect/$project/$env/$name'
+    | '/keys'
+    | '/orgs'
+    | '/approve/$id'
+    | '/connect/$request'
+    | '/parents/$name'
+    | '/parents/'
+    | '/projects/'
+    | '/projects/$project/$env'
+    | '/projects/$project/'
+    | '/collect/$project/$env/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  AppRoute: typeof AppRouteWithChildren
-  ChooseRoute: typeof ChooseRoute
+  IndexRoute: typeof IndexRoute
+  AuditRoute: typeof AuditRoute
   DeviceRoute: typeof DeviceRoute
-  SigninRoute: typeof SigninRoute
-  SigningInRoute: typeof SigningInRoute
+  KeysRoute: typeof KeysRoute
+  OrgsRoute: typeof OrgsRoute
+  ApproveIdRoute: typeof ApproveIdRoute
+  ConnectRequestRoute: typeof ConnectRequestRoute
+  ParentsNameRoute: typeof ParentsNameRoute
+  ParentsIndexRoute: typeof ParentsIndexRoute
+  ProjectsIndexRoute: typeof ProjectsIndexRoute
+  ProjectsProjectEnvRoute: typeof ProjectsProjectEnvRoute
+  ProjectsProjectIndexRoute: typeof ProjectsProjectIndexRoute
+  CollectProjectEnvNameRoute: typeof CollectProjectEnvNameRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/_app': {
-      id: '/_app'
-      path: ''
+    '/': {
+      id: '/'
+      path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof AppRouteImport
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/choose': {
-      id: '/choose'
-      path: '/choose'
-      fullPath: '/choose'
-      preLoaderRoute: typeof ChooseRouteImport
+    '/audit': {
+      id: '/audit'
+      path: '/audit'
+      fullPath: '/audit'
+      preLoaderRoute: typeof AuditRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/device': {
@@ -258,145 +222,93 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/signin': {
-      id: '/signin'
-      path: '/signin'
-      fullPath: '/signin'
-      preLoaderRoute: typeof SigninRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/signing-in': {
-      id: '/signing-in'
-      path: '/signing-in'
-      fullPath: '/signing-in'
-      preLoaderRoute: typeof SigningInRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/_app/': {
-      id: '/_app/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof AppIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/audit': {
-      id: '/_app/audit'
-      path: '/audit'
-      fullPath: '/audit'
-      preLoaderRoute: typeof AppAuditRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/keys': {
-      id: '/_app/keys'
+    '/keys': {
+      id: '/keys'
       path: '/keys'
       fullPath: '/keys'
-      preLoaderRoute: typeof AppKeysRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof KeysRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/orgs': {
-      id: '/_app/orgs'
+    '/orgs': {
+      id: '/orgs'
       path: '/orgs'
       fullPath: '/orgs'
-      preLoaderRoute: typeof AppOrgsRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof OrgsRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/approve/$id': {
-      id: '/_app/approve/$id'
+    '/approve/$id': {
+      id: '/approve/$id'
       path: '/approve/$id'
       fullPath: '/approve/$id'
-      preLoaderRoute: typeof AppApproveIdRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ApproveIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/connect/$request': {
-      id: '/_app/connect/$request'
+    '/connect/$request': {
+      id: '/connect/$request'
       path: '/connect/$request'
       fullPath: '/connect/$request'
-      preLoaderRoute: typeof AppConnectRequestRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ConnectRequestRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/parents/': {
-      id: '/_app/parents/'
+    '/parents/': {
+      id: '/parents/'
       path: '/parents'
       fullPath: '/parents/'
-      preLoaderRoute: typeof AppParentsIndexRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ParentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/parents/$name': {
-      id: '/_app/parents/$name'
+    '/parents/$name': {
+      id: '/parents/$name'
       path: '/parents/$name'
       fullPath: '/parents/$name'
-      preLoaderRoute: typeof AppParentsNameRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ParentsNameRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/projects/': {
-      id: '/_app/projects/'
+    '/projects/': {
+      id: '/projects/'
       path: '/projects'
       fullPath: '/projects/'
-      preLoaderRoute: typeof AppProjectsIndexRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ProjectsIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/projects/$project/': {
-      id: '/_app/projects/$project/'
+    '/projects/$project/': {
+      id: '/projects/$project/'
       path: '/projects/$project'
       fullPath: '/projects/$project/'
-      preLoaderRoute: typeof AppProjectsProjectIndexRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ProjectsProjectIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/projects/$project/$env': {
-      id: '/_app/projects/$project/$env'
+    '/projects/$project/$env': {
+      id: '/projects/$project/$env'
       path: '/projects/$project/$env'
       fullPath: '/projects/$project/$env'
-      preLoaderRoute: typeof AppProjectsProjectEnvRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof ProjectsProjectEnvRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/_app/collect/$project/$env/$name': {
-      id: '/_app/collect/$project/$env/$name'
+    '/collect/$project/$env/$name': {
+      id: '/collect/$project/$env/$name'
       path: '/collect/$project/$env/$name'
       fullPath: '/collect/$project/$env/$name'
-      preLoaderRoute: typeof AppCollectProjectEnvNameRouteImport
-      parentRoute: typeof AppRoute
+      preLoaderRoute: typeof CollectProjectEnvNameRouteImport
+      parentRoute: typeof rootRouteImport
     }
   }
 }
 
-interface AppRouteChildren {
-  AppAuditRoute: typeof AppAuditRoute
-  AppKeysRoute: typeof AppKeysRoute
-  AppOrgsRoute: typeof AppOrgsRoute
-  AppIndexRoute: typeof AppIndexRoute
-  AppApproveIdRoute: typeof AppApproveIdRoute
-  AppConnectRequestRoute: typeof AppConnectRequestRoute
-  AppParentsNameRoute: typeof AppParentsNameRoute
-  AppParentsIndexRoute: typeof AppParentsIndexRoute
-  AppProjectsIndexRoute: typeof AppProjectsIndexRoute
-  AppProjectsProjectEnvRoute: typeof AppProjectsProjectEnvRoute
-  AppProjectsProjectIndexRoute: typeof AppProjectsProjectIndexRoute
-  AppCollectProjectEnvNameRoute: typeof AppCollectProjectEnvNameRoute
-}
-
-const AppRouteChildren: AppRouteChildren = {
-  AppAuditRoute: AppAuditRoute,
-  AppKeysRoute: AppKeysRoute,
-  AppOrgsRoute: AppOrgsRoute,
-  AppIndexRoute: AppIndexRoute,
-  AppApproveIdRoute: AppApproveIdRoute,
-  AppConnectRequestRoute: AppConnectRequestRoute,
-  AppParentsNameRoute: AppParentsNameRoute,
-  AppParentsIndexRoute: AppParentsIndexRoute,
-  AppProjectsIndexRoute: AppProjectsIndexRoute,
-  AppProjectsProjectEnvRoute: AppProjectsProjectEnvRoute,
-  AppProjectsProjectIndexRoute: AppProjectsProjectIndexRoute,
-  AppCollectProjectEnvNameRoute: AppCollectProjectEnvNameRoute,
-}
-
-const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
-  AppRoute: AppRouteWithChildren,
-  ChooseRoute: ChooseRoute,
+  IndexRoute: IndexRoute,
+  AuditRoute: AuditRoute,
   DeviceRoute: DeviceRoute,
-  SigninRoute: SigninRoute,
-  SigningInRoute: SigningInRoute,
+  KeysRoute: KeysRoute,
+  OrgsRoute: OrgsRoute,
+  ApproveIdRoute: ApproveIdRoute,
+  ConnectRequestRoute: ConnectRequestRoute,
+  ParentsNameRoute: ParentsNameRoute,
+  ParentsIndexRoute: ParentsIndexRoute,
+  ProjectsIndexRoute: ProjectsIndexRoute,
+  ProjectsProjectEnvRoute: ProjectsProjectEnvRoute,
+  ProjectsProjectIndexRoute: ProjectsProjectIndexRoute,
+  CollectProjectEnvNameRoute: CollectProjectEnvNameRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -17,7 +17,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      # Installing also builds the web UI into src/ui/assets.gen.ts.
+      # Installing also builds the web UI into src/ui/assets.ts.
       - run: bun install --frozen-lockfile
       - name: Typecheck (Worker, browser)
         run: |

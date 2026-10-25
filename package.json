@@ -7,8 +7,8 @@
     "vault": "src/cli.ts"
   },
   "scripts": {
-    "build:ui": "bun scripts/embed-ui.ts",
     "build:cli": "bun scripts/build-cli.ts",
+    "build:ui": "bun scripts/build-ui.ts",
     "cli": "bun src/cli.ts",
     "dev": "bun run build:ui && cf dev",
     "deploy": "bun run build:ui && cf deploy --mode production",
@@ -23,9 +23,10 @@
     "acceptance:collection": "bun scripts/collection-acceptance.ts",
     "check": "cf workers types && tsc --noEmit && tsc --noEmit -p tsconfig.browser.json && bun run deploy:dry-run",
     "test": "bun test src",
+    "test:ui": "bun test scripts/ui-resume.test.ts",
     "types": "cf workers types",
     "uninstall:cli": "bun scripts/uninstall-cli.ts",
-    "postinstall": "bun scripts/embed-ui.ts"
+    "postinstall": "bun scripts/build-ui.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.2.0",

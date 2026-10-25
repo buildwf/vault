@@ -12,7 +12,7 @@ The UI is built from `web/` with stock shadcn/ui components. `bun install` and `
 Select **Sign in with GitHub** on the sign-in page. This works in any browser, for a GitHub account that an operator added to the org:
 
 ```sh
-vault people add GITHUB_LOGIN      # or the "People who sign in with GitHub" form on the Access page
+vault people add GITHUB_LOGIN      # or the "People who sign in with GitHub" form on **Vault keys**
 vault people list
 vault people remove GITHUB_LOGIN --yes
 ```
@@ -20,7 +20,7 @@ vault people remove GITHUB_LOGIN --yes
 A person you add becomes an operator of your org. They manage everything in it.
 If your GitHub account is in more than one org, the page asks which org to use.
 The session key has the label `web ui (GitHub @LOGIN)` and expires after 12 hours.
-If you remove a person, they cannot sign in again. Sessions they already have last until they expire; revoke them on **Access** to end them now.
+If you remove a person, they cannot sign in again. Sessions they already have last until they expire; revoke them on **Vault keys** to end them now.
 
 The button shows only when the vault has a GitHub OAuth app. Refer to [Set up GitHub sign-in](#set-up-github-sign-in).
 
@@ -51,10 +51,10 @@ A system key sees only the environments in its scopes.
 
 | Page | It shows | You can |
 |---|---|---|
-| Overview | Who you are, all projects, environments and secret counts, parent keys and the secrets that use them, and what each term means. | Read only. |
-| Projects | Each environment's secrets, with what happens when an app reads each one. A minted secret links to its parent key. | Make and delete projects and environments. Set and delete secrets. |
+| Overview | Who you are, what is stored, the parent keys, and what each term means. | Read only. |
+| Projects | Each project's environments, and each environment's secrets with what happens when an app reads them. | Make and delete projects and environments. Set and delete secrets. |
 | Parent keys | Each parent, the secrets that use it, and every key minted from it, with its status. | Set and delete parent keys. Revoke minted keys. |
-| Access | Every vault key and who holds it, and the GitHub accounts that can sign in. | Make and revoke keys. Add and remove people. |
+| Vault keys | Who has access, and to what, and who signs in with GitHub. | Make and revoke keys. Add and remove people. |
 | Audit | Every read and change, by key label. | Read only. |
 | Orgs | The orgs in the vault. Platform org only. | Make orgs. |
 
@@ -92,3 +92,15 @@ If a step fails, fix it and run the command again. It skips the steps that are d
 The app asks GitHub for no permissions. The vault reads only the account's id and login, one time, at sign-in.
 
 To do it by hand instead, make a GitHub OAuth app whose callback URL is `https://<your vault>/auth/github/callback`, put its client secret in Secrets Store as `<prefix>_GITHUB_CLIENT_SECRET` (scope **Workers**), put its client id in `.env` as `VAULT_GITHUB_CLIENT_ID`, then migrate and deploy.
+
+## Change the UI
+
+The UI is a [TanStack Start](https://tanstack.com/start) app in `web/`, built only from [shadcn/ui](https://ui.shadcn.com) components with their defaults (zinc, Inter, Mira). It builds to a static page that the Worker serves at `/ui`, with its files at `/assets`.
+
+```sh
+cd web && bun install && bun run dev   # http://localhost:3000; API calls need a vault on the same origin
+bun run build:ui                       # from the repo root: rebuild and embed in src/ui/assets.ts
+```
+
+Commit `src/ui/assets.ts` with your change; the Worker deploys what is in it.
+
